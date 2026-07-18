@@ -491,6 +491,7 @@
 
     function startExtraction() {
       if (started) return; started = true;
+      if (poster) poster.style.setProperty('background', '#000', 'important'); // restore opacity on retry
       setStatus('Đang tải phim…');
       selectDefaultServer();
       var tries = 0, jw = null;
@@ -527,12 +528,42 @@
       var slow = setTimeout(function () { if (!resolvedUrl) setStatus('Đang chờ nguồn phim…'); }, 6000);
       var giveUp = setTimeout(function () {
         clearInterval(poll);
-        if (!resolvedUrl) { setStatus('Không lấy được nguồn phim. Thử lại.'); started = false; }
+        if (!resolvedUrl) { started = false; revealUnderlyingPlayer(); }
       }, 30000);
       onResolved(function (url) {
         clearTimeout(slow); clearTimeout(giveUp); clearInterval(poll);
         loadHlsJs(function () { mountPlayer(url); });
       });
+    }
+
+    // DIAGNOSTIC. If extraction never resolves, our poster (an OPAQUE full-screen
+    // overlay) has been sitting on top the whole time — meaning if JW's own player
+    // underneath actually got a real video playing (audio-with-no-picture reports
+    // are consistent with this: the "no picture" may be OUR OWN opaque div, not a
+    // rendering bug), we've never been able to see it. Make the poster translucent
+    // so whatever is underneath becomes visible, and report concrete video-element
+    // facts (videoWidth/height, what's on top at its center) as on-screen text,
+    // since there's no devtools access on the TV to check this any other way.
+    function revealUnderlyingPlayer() {
+      try {
+        if (poster) poster.style.setProperty('background', 'rgba(0,0,0,.05)', 'important');
+        var av = document.querySelector('[class*="aspect-video"]');
+        var v = av ? av.querySelector('video') : document.querySelector('video');
+        var report;
+        if (!v) {
+          report = 'Không lấy được nguồn phim. (chẩn đoán: không tìm thấy thẻ video)';
+        } else {
+          var r = v.getBoundingClientRect();
+          var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          var topEl = document.elementFromPoint(cx, cy);
+          var coveredByUs = topEl && topEl.closest && topEl.closest('#tpweb-play-btn, [style*="z-index:999998"]');
+          report = 'Không lấy được nguồn phim. (chẩn đoán: videoSize=' + v.videoWidth + 'x' + v.videoHeight +
+            ' readyState=' + v.readyState + ' paused=' + v.paused +
+            ' currentTime=' + v.currentTime.toFixed(1) +
+            ' bịChe=' + (coveredByUs ? 'có(overlay của mình)' : (topEl ? topEl.tagName : 'không')) + ')';
+        }
+        setStatus(report);
+      } catch (e) { setStatus('Không lấy được nguồn phim. (lỗi chẩn đoán: ' + e.message + ')'); }
     }
 
     function mountPlayer(url) {
