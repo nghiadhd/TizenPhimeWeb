@@ -8,7 +8,7 @@
   var WHITELIST = /(^|\.)(phimmoie\.fm|motchille\.cx|opstream\d*\.com|kkphimplayer\d*\.com|jwpcdn\.com|jwplatform\.com|jwplayer\.com|ytimg\.com|youtube\.com|youtube-nocookie\.com|google\.com|gstatic\.com|googleapis\.com|cloudflare\.com|cloudflareinsights\.com|recaptcha\.net|jsdelivr\.net)$/i;
 
   // Known ad / popunder networks (matched anywhere in the URL).
-  var AD = /(doubleclick|googlesyndication|googleadservices|pagead2|adservice|popads|popcash|popunder|propellerads|propel|adsterra|mgid|taboola|outbrain|revcontent|histats|adnxs|adsystem|clickadu|hilltopads|exoclick|juicyads|trafficjunky|a-ads|ad-maven|admaven|bidgear|monetag|richads|galaksion|onclckbn|onclickalgo|highperformanceformat|coinzillatag|adtng|adskeeper)/i;
+  var AD = /(doubleclick|googlesyndication|googleadservices|pagead2|adservice|popads|popcash|popunder|propellerads|propel|adsterra|mgid|taboola|outbrain|revcontent|histats|adnxs|adsystem|clickadu|hilltopads|exoclick|juicyads|trafficjunky|a-ads|ad-maven|admaven|bidgear|monetag|richads|galaksion|onclckbn|onclickalgo|highperformanceformat|coinzillatag|adtng|adskeeper|adcenter)/i;
 
   function hostOf(u) { try { return new URL(u, location.href).hostname; } catch (e) { return ''; } }
   function isAdUrl(u) {
@@ -24,12 +24,23 @@
   // phimmoie fills <div class="ads-banner"> with betting ("nhà cái") banners
   // client-side; there's no close button and no mouse on the TV, so remove them
   // outright. These classes are the site's ad containers — safe to nuke.
-  var AD_SELECTOR = '.ads-banner, ins.adsbygoogle, [id^="ad_"], [id^="ads-"], [class*="banner-ads"], [class*="ads-banner"]';
+  var AD_SELECTOR = '.ads-banner, ins.adsbygoogle, [id^="ad_"], [id^="ads-"], [class*="banner-ads"], [class*="ads-banner"], img[src*="adcenter"]';
   try {
     var st = document.createElement('style');
     st.textContent = AD_SELECTOR + '{display:none!important;height:0!important;overflow:hidden!important}';
     (document.head || document.documentElement).appendChild(st);
   } catch (e) {}
+
+  // Any image from a non-whitelisted cross-origin host is an ad here: all real
+  // posters/thumbs on phimmoie are same-origin (or whitelisted CDNs). Remove the
+  // image and its click wrapper so no betting banner flashes before CSS/observer.
+  function isAdImg(img) {
+    var src = img.currentSrc || img.src || (img.getAttribute && img.getAttribute('src')) || '';
+    if (!src) return false;
+    var h = hostOf(src);
+    return !!(h && h !== location.hostname && !WHITELIST.test(h));
+  }
+  function killImg(img) { try { (img.closest('a') || img).remove(); } catch (e) { try { img.remove(); } catch (e2) {} } }
 
   // 1) Kill popups / popunders — the worst offender on free phim sites.
   try { window.open = function () { return null; }; } catch (e) {}
@@ -82,19 +93,28 @@
       // The site's own ad slots (betting banners) — remove the whole container.
       var slots = root.querySelectorAll ? root.querySelectorAll(AD_SELECTOR) : [];
       for (var k = 0; k < slots.length; k++) { try { slots[k].remove(); } catch (e) {} }
+      // Cross-origin ad images (adcenter.cx etc.) anywhere on the page.
+      var imgs = root.querySelectorAll ? root.querySelectorAll('img') : [];
+      for (var m = 0; m < imgs.length; m++) if (isAdImg(imgs[m])) killImg(imgs[m]);
     } catch (e) {}
   }
   var obs = new MutationObserver(function (muts) {
     for (var i = 0; i < muts.length; i++) {
+      if (muts[i].type === 'attributes') {
+        var tgt = muts[i].target;
+        if (tgt && tgt.tagName === 'IMG' && isAdImg(tgt)) killImg(tgt);
+        continue;
+      }
       var a = muts[i].addedNodes;
       for (var j = 0; j < a.length; j++) {
         var n = a[j];
         if (isAdNode(n) || (n.nodeType === 1 && n.matches && n.matches(AD_SELECTOR))) { try { n.remove(); } catch (e) {} }
+        else if (n.nodeType === 1 && n.tagName === 'IMG' && isAdImg(n)) killImg(n);
         else if (n.nodeType === 1) sweep(n);
       }
     }
   });
-  function start() { sweep(document); try { obs.observe(document.documentElement, { childList: true, subtree: true }); } catch (e) {} }
+  function start() { sweep(document); try { obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] }); } catch (e) {} }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 
