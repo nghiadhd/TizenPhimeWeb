@@ -41,7 +41,19 @@
     if (h && WHITELIST.test(h)) return false;
     return AD.test(String(src));
   }
-  function killImg(img) { try { (img.closest('a') || img).remove(); } catch (e) { try { img.remove(); } catch (e2) {} } }
+  // NEVER remove nodes: phimmoie is a React/Next app and .remove()-ing a node it
+  // owns triggers "removeChild NotFoundError" that unmounts the whole tree (incl.
+  // the player). Hiding via inline !important keeps the DOM intact and React happy.
+  function hide(el) {
+    if (!el || el.getAttribute && el.getAttribute('data-tpweb-hidden')) return;
+    try {
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+      if (el.setAttribute) el.setAttribute('data-tpweb-hidden', '1');
+    } catch (e) {}
+  }
+  function killImg(img) { hide(img.closest('a') || img); }
 
   // 1) Kill popups / popunders — the worst offender on free phim sites.
   try { window.open = function () { return null; }; } catch (e) {}
@@ -90,10 +102,10 @@
   function sweep(root) {
     try {
       var els = root.querySelectorAll ? root.querySelectorAll('iframe, ins, embed') : [];
-      for (var i = 0; i < els.length; i++) if (isAdNode(els[i])) els[i].remove();
-      // The site's own ad slots (betting banners) — remove the whole container.
+      for (var i = 0; i < els.length; i++) if (isAdNode(els[i])) hide(els[i]);
+      // The site's own ad slots (betting banners) — hide the whole container.
       var slots = root.querySelectorAll ? root.querySelectorAll(AD_SELECTOR) : [];
-      for (var k = 0; k < slots.length; k++) { try { slots[k].remove(); } catch (e) {} }
+      for (var k = 0; k < slots.length; k++) hide(slots[k]);
       // Cross-origin ad images (adcenter.cx etc.) anywhere on the page.
       var imgs = root.querySelectorAll ? root.querySelectorAll('img') : [];
       for (var m = 0; m < imgs.length; m++) if (isAdImg(imgs[m])) killImg(imgs[m]);
@@ -104,12 +116,13 @@
       if (muts[i].type === 'attributes') {
         var tgt = muts[i].target;
         if (tgt && tgt.tagName === 'IMG' && isAdImg(tgt)) killImg(tgt);
+        else if (tgt && tgt.matches && tgt.matches(AD_SELECTOR)) hide(tgt);
         continue;
       }
       var a = muts[i].addedNodes;
       for (var j = 0; j < a.length; j++) {
         var n = a[j];
-        if (isAdNode(n) || (n.nodeType === 1 && n.matches && n.matches(AD_SELECTOR))) { try { n.remove(); } catch (e) {} }
+        if (isAdNode(n) || (n.nodeType === 1 && n.matches && n.matches(AD_SELECTOR))) hide(n);
         else if (n.nodeType === 1 && n.tagName === 'IMG' && isAdImg(n)) killImg(n);
         else if (n.nodeType === 1) sweep(n);
       }
