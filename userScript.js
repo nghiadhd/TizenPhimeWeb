@@ -20,30 +20,9 @@
     return !!(h && h !== location.hostname && !WHITELIST.test(h));
   }
 
-  // 0a) Drop the one-shot trusted-click popunder at registration. phimmoie adds a
-  // capture `click` listener on window shaped like
-  //   t => { t.isTrusted && (B(n), removeEventListener(t.type, o, {capture:true})) }
-  // that redirects the whole tab to a betting site (yo88.sbs) on the first real
-  // click — anywhere, including the vietsub/server buttons (which aren't links, so
-  // the link-hijack can't catch them). We refuse to register any nav-type listener
-  // whose body gates on isTrusted AND self-removes / navigates: the signature of a
-  // user-activation popunder. Runs at document-start, before the site registers it.
-  try {
-    var _origAEL = EventTarget.prototype.addEventListener;
-    var NAV_EV = /^(click|auxclick|mousedown|mouseup|pointerdown|pointerup|touchstart|touchend)$/i;
-    EventTarget.prototype.addEventListener = function (type, fn, opts) {
-      try {
-        if (fn && NAV_EV.test(type) && (this === window || this === document || this === document.documentElement || this === document.body)) {
-          var src = (typeof fn === 'function') ? Function.prototype.toString.call(fn)
-            : (fn.handleEvent ? Function.prototype.toString.call(fn.handleEvent) : '');
-          if (/isTrusted/.test(src) && /removeEventListener|location|open\s*\(|\.href|\.assign|\.replace/.test(src)) {
-            return; // popunder — do not register
-          }
-        }
-      } catch (e) {}
-      return _origAEL.apply(this, arguments);
-    };
-  } catch (e) {}
+  // Timestamp of the last synthetic click our virtual cursor dispatched — lets the
+  // click-laundering below skip the redundant native click OK also produces on the TV.
+  var tpwebSyntheticTs = 0;
 
   // 0) Hide the site's OWN ad slots at document-start so they never render.
   // phimmoie fills <div class="ads-banner"> with betting ("nhà cái") banners
@@ -163,12 +142,23 @@
     Object.defineProperty(window, 'open', { configurable: true, get: function () { return _noopen; }, set: function () {} });
   } catch (e) { try { window.open = function () { return null; }; } catch (e2) {} }
 
-  // Defeat the click-redirect popunder. phimmoie's OWN bundle does
-  // `location.href = <betting site>` on a film click (utm_medium=popunder → yo88.sbs
-  // etc.). location.href is unforgeable so we can't wrap it — instead we take over
-  // link clicks: navigate same-origin targets ourselves and stopImmediatePropagation
-  // so the site's popunder click handler never runs; cross-origin ad links are killed.
+  // Defeat the popunder by CLICK LAUNDERING. phimmoie registers a window-capture
+  // listener `t => t.isTrusted && (redirect to yo88.sbs, self-remove)` that fires on
+  // the first REAL click anywhere — including the vietsub/server buttons (not links).
+  // We can't drop it (the site restores addEventListener to native) and can't wrap
+  // location.href (unforgeable). So: cancel the trusted click in window-capture
+  // (before the popunder) and re-dispatch an UNTRUSTED copy — the site's own handlers
+  // still run, but the isTrusted-gated popunder ignores it.
   function onNav(ev) {
+    if (ev.type === 'click' && ev.isTrusted) {
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      if (Date.now() - tpwebSyntheticTs < 500) return; // our cursor already clicked here
+      var tgt = ev.target;
+      try {
+        tgt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: ev.clientX, clientY: ev.clientY, view: window }));
+      } catch (e) {}
+      return;
+    }
     var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;
     var raw = a.getAttribute('href') || '';
@@ -320,6 +310,7 @@
       var el = document.elementFromPoint(cx, cy);
       if (cur) cur.style.display = '';
       if (!el) return;
+      tpwebSyntheticTs = Date.now(); // tell onNav laundering our cursor drove this click
       var o = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
       ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (ty) {
         try { el.dispatchEvent(ty.indexOf('pointer') === 0 ? new PointerEvent(ty, o) : new MouseEvent(ty, o)); }
