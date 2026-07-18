@@ -147,6 +147,18 @@
   // cross-origin ad links are killed. NOTE: this covers link clicks only — the
   // vietsub/server BUTTONS use a separate, non-link popunder vector (see notes).
   function onNav(ev) {
+    // Kill the redundant NATIVE trusted click Tizen emits for an OK press. Our
+    // virtual cursor already issued the intended action as a SYNTHETIC click (which
+    // the isTrusted-gated popunder ignores); Tizen ALSO fires a trusted click for
+    // the same OK, and THAT is what triggers yo88. If a synthetic cursor click just
+    // happened, swallow the trailing trusted click so the popunder never sees one.
+    // Guarded by the recency check so a stray trusted click never leaves the UI dead.
+    if (ev.isTrusted && (Date.now() - tpwebSyntheticTs) < 700 &&
+        (ev.type === 'click' || ev.type === 'auxclick' || ev.type === 'mousedown' ||
+         ev.type === 'mouseup' || ev.type === 'pointerdown' || ev.type === 'pointerup')) {
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      return;
+    }
     var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;
     var raw = a.getAttribute('href') || '';
