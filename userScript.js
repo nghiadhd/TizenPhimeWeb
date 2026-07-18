@@ -161,6 +161,9 @@
     }
   }
   ['click', 'mousedown', 'pointerdown', 'pointerup', 'mouseup', 'touchstart', 'auxclick', 'contextmenu'].forEach(function (type) {
+    // bind on window too — window's capture phase runs before document's, so we
+    // intercept the popunder even if it registers a capture listener on document.
+    try { window.addEventListener(type, onNav, true); } catch (e) {}
     document.addEventListener(type, onNav, true);
   });
 
@@ -229,91 +232,85 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 
-  // 4) Remote D-pad navigation. phimmoie is a mouse/touch SPA; the TV has only a
-  // remote. Arrow keys move a visible focus ring to the nearest focusable element
-  // in that direction, Enter activates it. Tizen's native spatial nav is unreliable.
-  (function spatialNav() {
-    try {
-      var fcss = document.createElement('style');
-      // A glow ring (box-shadow follows the element's own rounded corners, unlike a
-      // rectangular outline which shows only corners on rounded TV cards) plus a
-      // slight zoom so the focused item clearly stands out from across the room.
-      fcss.textContent =
-        '.tpweb-focus{outline:none!important;' +
-        // inset ring draws INSIDE the element (never clipped by a row's overflow),
-        // outer ring + glow draw outside — together always visible on the TV.
-        'box-shadow:inset 0 0 0 4px #ff2b2b,0 0 0 4px #ff2b2b,0 0 22px 8px rgba(255,43,43,.85)!important;' +
-        'transform:scale(1.06)!important;z-index:99999!important;' +
-        'transition:transform .1s ease!important;scroll-margin:140px!important}';
-      (document.head || document.documentElement).appendChild(fcss);
-    } catch (e) {}
+  // 4) Remote-driven VIRTUAL MOUSE CURSOR. phimmoie is a mouse/touch SPA; the TV
+  // has only a D-pad. Arrow keys move an on-screen cursor (with acceleration), OK
+  // dispatches a real click at the cursor — so you can reach ANYTHING, including the
+  // player controls. Deliberately NO CSS transform on page elements: a transform on
+  // the player's ancestor knocks the <video> off the Tizen hardware plane (black
+  // screen + audio only), which the old focus ring was likely causing.
+  (function virtualCursor() {
+    var cur = null, cx = 0, cy = 0, vel = 0, lastDir = '', lastT = 0, lastHover = null;
 
-    var SEL = 'a[href],button,input,select,textarea,video,[tabindex]:not([tabindex="-1"]),[role="button"]';
-    var current = null;
-
-    function visible(el) {
-      if (!el || !el.getClientRects().length) return false;
-      var r = el.getBoundingClientRect();
-      if (r.width < 6 || r.height < 6) return false;
-      var s = getComputedStyle(el);
-      return s.visibility !== 'hidden' && s.display !== 'none' && s.pointerEvents !== 'none';
+    function ensure() {
+      if (cur && document.body && document.body.contains(cur)) return;
+      cur = document.createElement('div');
+      cur.setAttribute('data-tpweb-cursor', '1');
+      cur.style.cssText = 'position:fixed;width:26px;height:26px;z-index:2147483647;pointer-events:none;' +
+        'border-radius:50%;background:rgba(255,43,43,.30);border:2px solid #ff2b2b;' +
+        'box-shadow:0 0 9px 2px rgba(255,43,43,.75),inset 0 0 4px rgba(255,255,255,.6);' +
+        'transform:translate(-50%,-50%);transition:left .045s linear,top .045s linear;will-change:left,top';
+      (document.body || document.documentElement).appendChild(cur);
+      if (!cx && !cy) { cx = (window.innerWidth || 1280) / 2; cy = (window.innerHeight || 720) / 2; }
+      draw();
     }
-    function items() {
-      var out = [], all = document.querySelectorAll(SEL);
-      for (var i = 0; i < all.length; i++) if (visible(all[i])) out.push(all[i]);
-      return out;
-    }
-    function center(el) { var r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r }; }
+    function draw() { if (cur) { cur.style.left = cx + 'px'; cur.style.top = cy + 'px'; } }
 
-    function setFocus(el) {
-      if (current) current.classList.remove('tpweb-focus');
-      current = el;
+    function move(dx, dy, dir) {
+      ensure();
+      var now = Date.now();
+      vel = (dir === lastDir && now - lastT < 260) ? Math.min(vel * 1.4, 95) : 26;
+      lastDir = dir; lastT = now;
+      cx = Math.max(3, Math.min((window.innerWidth || 1280) - 3, cx + dx * vel));
+      cy = Math.max(3, Math.min((window.innerHeight || 720) - 3, cy + dy * vel));
+      draw();
+      var edge = 90;
+      if (dy > 0 && cy > (window.innerHeight - edge)) window.scrollBy(0, vel);
+      else if (dy < 0 && cy < edge) window.scrollBy(0, -vel);
+      hover();
+    }
+    function hover() {
+      if (cur) cur.style.display = 'none';
+      var el = document.elementFromPoint(cx, cy);
+      if (cur) cur.style.display = '';
+      if (lastHover && lastHover !== el) { try { lastHover.style.removeProperty('filter'); } catch (e) {} }
+      var t = el && el.closest ? el.closest('a[href],button,[role="button"],.jw-icon,[onclick],input,[class*="cursor-pointer"]') : null;
+      if (t && t.tagName !== 'VIDEO') { try { t.style.setProperty('filter', 'brightness(1.3)'); } catch (e) {} lastHover = t; }
+      else lastHover = null;
+      if (el) try { el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy, view: window })); } catch (e) {}
+    }
+    function clickAt() {
+      ensure();
+      if (cur) cur.style.display = 'none';
+      var el = document.elementFromPoint(cx, cy);
+      if (cur) cur.style.display = '';
       if (!el) return;
-      el.classList.add('tpweb-focus');
-      try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
-      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-    }
-
-    function pick(dir) {
-      var list = items();
-      if (!list.length) return;
-      if (!current || !visible(current) || list.indexOf(current) === -1) { setFocus(list[0]); return; }
-      var c = center(current), best = null, bestScore = Infinity;
-      for (var i = 0; i < list.length; i++) {
-        if (list[i] === current) continue;
-        var t = center(list[i]), dx = t.x - c.x, dy = t.y - c.y, primary, cross;
-        if (dir === 'right') { if (dx <= 1) continue; primary = dx; cross = Math.abs(dy); }
-        else if (dir === 'left') { if (dx >= -1) continue; primary = -dx; cross = Math.abs(dy); }
-        else if (dir === 'down') { if (dy <= 1) continue; primary = dy; cross = Math.abs(dx); }
-        else { if (dy >= -1) continue; primary = -dy; cross = Math.abs(dx); }
-        var score = primary + cross * 2; // prefer aligned, then nearest
-        if (score < bestScore) { bestScore = score; best = list[i]; }
-      }
-      if (best) setFocus(best);
-    }
-
-    function activate() {
-      if (!current) return;
-      var tag = current.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { try { current.focus(); } catch (e) {} return; }
-      try { current.click(); } catch (e) {}
+      var o = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+      ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (ty) {
+        try { el.dispatchEvent(ty.indexOf('pointer') === 0 ? new PointerEvent(ty, o) : new MouseEvent(ty, o)); }
+        catch (e) { try { el.dispatchEvent(new MouseEvent(ty.replace('pointer', 'mouse'), o)); } catch (e2) {} }
+      });
     }
 
     document.addEventListener('keydown', function (ev) {
       var k = ev.keyCode, a = document.activeElement, typing = a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
-      // 37 left, 38 up, 39 right, 40 down, 13 enter
-      if (k === 37 || k === 39) { if (typing) return; ev.preventDefault(); ev.stopPropagation(); pick(k === 39 ? 'right' : 'left'); }
-      else if (k === 38 || k === 40) { ev.preventDefault(); ev.stopPropagation(); pick(k === 40 ? 'down' : 'up'); }
-      else if (k === 13) {
-        if (typing && current === a) return; // let Enter submit inside a field
-        ev.preventDefault(); ev.stopPropagation(); activate();
+      if (k === 37 || k === 38 || k === 39 || k === 40) {
+        if (typing) return; // let arrows edit text in a field
+        ev.preventDefault(); ev.stopPropagation();
+        if (k === 37) move(-1, 0, 'l'); else if (k === 39) move(1, 0, 'r');
+        else if (k === 38) move(0, -1, 'u'); else move(0, 1, 'd');
+      } else if (k === 13) {
+        if (typing) return; // Enter submits/inserts in a field
+        ev.preventDefault(); ev.stopPropagation(); clickAt();
+      } else if (k === 10009 || k === 461) { // Tizen / LG BACK
+        try { history.back(); } catch (e) {}
       }
     }, true);
 
-    function seed() { if (!current) { var l = items(); if (l.length) setFocus(l[0]); } }
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', seed);
-    else setTimeout(seed, 300);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensure);
+    else setTimeout(ensure, 500);
+    // keep the cursor alive across SPA re-renders that wipe body children
+    setInterval(function () { try { ensure(); if (cur) cur.style.zIndex = '2147483647'; } catch (e) {} }, 1500);
   })();
 
-  console.log('[TizenPhimWeb] ad-block + remote nav active on ' + location.hostname);
+  console.log('[TizenPhimWeb] ad-block + virtual cursor active on ' + location.hostname);
 })();
