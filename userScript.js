@@ -493,17 +493,23 @@
       if (started) return; started = true;
       setStatus('Đang tải phim…');
       selectDefaultServer();
-      var tries = 0;
+      var tries = 0, jw = null;
       var iv = setInterval(function () {
         try {
           if (window.jwplayer) {
             var p = window.jwplayer();
             if (p && typeof p.play === 'function') {
-              // Listen on JW's own event API — the authoritative source for what's
-              // actually resolved, since network sniffing doesn't reliably see it.
+              jw = p;
+              // Listen on JW's own event API as one signal — but NOT `firstFrame`:
+              // that only fires once a VIDEO FRAME actually paints, which is exactly
+              // what may never happen in the black-screen scenario this player exists
+              // to work around. `playlistItem` fires on source assignment regardless
+              // of rendering, and `play`/`time` fire as long as the media element is
+              // progressing (audio alone is enough for these to fire).
               try {
                 p.on('playlistItem', function (data) { captureFromPlaylistItem(data); });
-                p.on('firstFrame', function () { try { captureFromPlaylistItem(p.getPlaylistItem()); } catch (e) {} });
+                p.on('play', function () { try { captureFromPlaylistItem(p.getPlaylistItem()); } catch (e) {} });
+                p.on('time', function () { try { captureFromPlaylistItem(p.getPlaylistItem()); } catch (e) {} });
               } catch (e) {}
               p.play(true);
               clearInterval(iv);
@@ -512,12 +518,19 @@
         } catch (e) {}
         if (++tries > 50 && !resolvedUrl) { clearInterval(iv); setStatus('Không tìm thấy trình phát. Thử lại.'); started = false; }
       }, 500); // give selectDefaultServer's React state update time to settle before play()
+      // Backup: poll getPlaylistItem() directly, independent of any specific JW event
+      // firing correctly — the most robust signal, since it doesn't depend on video
+      // rendering, network-request visibility, or any particular event semantics.
+      var poll = setInterval(function () {
+        if (jw) { try { captureFromPlaylistItem(jw.getPlaylistItem()); } catch (e) {} }
+      }, 1000);
       var slow = setTimeout(function () { if (!resolvedUrl) setStatus('Đang chờ nguồn phim…'); }, 6000);
       var giveUp = setTimeout(function () {
+        clearInterval(poll);
         if (!resolvedUrl) { setStatus('Không lấy được nguồn phim. Thử lại.'); started = false; }
-      }, 25000);
+      }, 30000);
       onResolved(function (url) {
-        clearTimeout(slow); clearTimeout(giveUp);
+        clearTimeout(slow); clearTimeout(giveUp); clearInterval(poll);
         loadHlsJs(function () { mountPlayer(url); });
       });
     }
