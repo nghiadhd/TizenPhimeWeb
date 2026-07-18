@@ -142,23 +142,11 @@
     Object.defineProperty(window, 'open', { configurable: true, get: function () { return _noopen; }, set: function () {} });
   } catch (e) { try { window.open = function () { return null; }; } catch (e2) {} }
 
-  // Defeat the popunder by CLICK LAUNDERING. phimmoie registers a window-capture
-  // listener `t => t.isTrusted && (redirect to yo88.sbs, self-remove)` that fires on
-  // the first REAL click anywhere — including the vietsub/server buttons (not links).
-  // We can't drop it (the site restores addEventListener to native) and can't wrap
-  // location.href (unforgeable). So: cancel the trusted click in window-capture
-  // (before the popunder) and re-dispatch an UNTRUSTED copy — the site's own handlers
-  // still run, but the isTrusted-gated popunder ignores it.
+  // Take over link navigation: same-origin links (films/episodes) we navigate
+  // ourselves and stop the site's handlers (which piggyback a popunder redirect);
+  // cross-origin ad links are killed. NOTE: this covers link clicks only — the
+  // vietsub/server BUTTONS use a separate, non-link popunder vector (see notes).
   function onNav(ev) {
-    if (ev.type === 'click' && ev.isTrusted) {
-      ev.preventDefault(); ev.stopImmediatePropagation();
-      if (Date.now() - tpwebSyntheticTs < 500) return; // our cursor already clicked here
-      var tgt = ev.target;
-      try {
-        tgt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: ev.clientX, clientY: ev.clientY, view: window }));
-      } catch (e) {}
-      return;
-    }
     var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;
     var raw = a.getAttribute('href') || '';
