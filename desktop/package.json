@@ -1,0 +1,12 @@
+{
+  "name": "tizenphimweb-desktop-preview",
+  "version": "1.0.0",
+  "description": "macOS preview harness — embeds phimmoie.fm + injects the ad-block. Not shipped to Tizen.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
