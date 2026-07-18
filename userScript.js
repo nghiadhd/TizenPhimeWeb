@@ -142,6 +142,38 @@
     Object.defineProperty(window, 'open', { configurable: true, get: function () { return _noopen; }, set: function () {} });
   } catch (e) { try { window.open = function () { return null; }; } catch (e2) {} }
 
+  // The REAL popunder mechanism (confirmed by instrumentation, not window.open at
+  // all): the button's click handler creates an <a href="https://<betting-site>"
+  // target="_blank"> and calls .click() on it directly — this fires the browser's
+  // native "open new browsing context" behavior independent of window.open, so
+  // blocking window.open alone never touched it. In a normal tabbed browser this
+  // opens a closeable second tab; in TizenBrew's single-surface webview (no tab
+  // chrome) the same request likely hijacks the one visible view with no way back.
+  // Patch the CLICK METHOD ITSELF so a non-whitelisted cross-origin target="_blank"
+  // anchor never fires its navigation, however it was created or clicked.
+  try {
+    var _aClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if ((this.target === '_blank' || this.target === '_new')) {
+        var h = hostOf(this.href);
+        if (h && h !== location.hostname && !WHITELIST.test(h)) return; // refuse to fire
+      }
+      return _aClick.apply(this, arguments);
+    };
+  } catch (e) {}
+  // Same defense for a hidden <form target="_blank"> submission — a common sibling
+  // technique to the anchor-click popunder.
+  try {
+    var _formSubmit = HTMLFormElement.prototype.submit;
+    HTMLFormElement.prototype.submit = function () {
+      if ((this.target === '_blank' || this.target === '_new')) {
+        var h = hostOf(this.action || '');
+        if (h && h !== location.hostname && !WHITELIST.test(h)) return;
+      }
+      return _formSubmit.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // Take over link navigation: same-origin links (films/episodes) we navigate
   // ourselves and stop the site's handlers (which piggyback a popunder redirect);
   // cross-origin ad links are killed. NOTE: this covers link clicks only. Non-link
