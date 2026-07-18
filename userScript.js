@@ -89,6 +89,34 @@
     }
   } catch (e) {}
 
+  // 0c) Strip JW Player's ad config. The site calls jwplayer(id).setup({advertising})
+  // to schedule a VAST pre-roll; deleting `advertising` at setup makes JW skip ads
+  // and play the movie directly — cleaner than aborting the VAST request (which
+  // stalls the ad plugin). We wrap window.jwplayer the moment their lib assigns it.
+  try {
+    var _jw;
+    Object.defineProperty(window, 'jwplayer', {
+      configurable: true,
+      get: function () { return _jw; },
+      set: function (lib) {
+        var wrapped = function () {
+          var inst = lib.apply(this, arguments);
+          if (inst && typeof inst.setup === 'function' && !inst.__tpwebPatched) {
+            var origSetup = inst.setup;
+            inst.setup = function (cfg) {
+              try { if (cfg) { delete cfg.advertising; delete cfg.ads; } } catch (e) {}
+              return origSetup.call(this, cfg);
+            };
+            inst.__tpwebPatched = true;
+          }
+          return inst;
+        };
+        for (var k in lib) { try { wrapped[k] = lib[k]; } catch (e) {} }
+        _jw = wrapped;
+      }
+    });
+  } catch (e) {}
+
   // 1) Kill popups / popunders — the worst offender on free phim sites.
   try { window.open = function () { return null; }; } catch (e) {}
 
