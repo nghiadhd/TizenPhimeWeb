@@ -99,20 +99,22 @@
       configurable: true,
       get: function () { return _jw; },
       set: function (lib) {
-        var wrapped = function () {
-          var inst = lib.apply(this, arguments);
-          if (inst && typeof inst.setup === 'function' && !inst.__tpwebPatched) {
-            var origSetup = inst.setup;
-            inst.setup = function (cfg) {
-              try { if (cfg) { delete cfg.advertising; delete cfg.ads; } } catch (e) {}
-              return origSetup.call(this, cfg);
-            };
-            inst.__tpwebPatched = true;
+        // Proxy forwards every property (incl. non-enumerable JW internals/.key)
+        // to the real lib; only the call is intercepted to strip ad config.
+        _jw = (typeof Proxy === 'function' && typeof lib === 'function') ? new Proxy(lib, {
+          apply: function (target, thisArg, args) {
+            var inst = Reflect.apply(target, thisArg, args);
+            if (inst && typeof inst.setup === 'function' && !inst.__tpwebPatched) {
+              var origSetup = inst.setup;
+              inst.setup = function (cfg) {
+                try { if (cfg) { delete cfg.advertising; delete cfg.ads; } } catch (e) {}
+                return origSetup.call(this, cfg);
+              };
+              inst.__tpwebPatched = true;
+            }
+            return inst;
           }
-          return inst;
-        };
-        for (var k in lib) { try { wrapped[k] = lib[k]; } catch (e) {} }
-        _jw = wrapped;
+        }) : lib;
       }
     });
   } catch (e) {}
