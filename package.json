@@ -1,7 +1,7 @@
 {
   "name": "tizenphimweb",
   "appName": "TizenPhim Web",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Open phimmoie.fm directly on the TV via TizenBrew, with ads/popups blocked",
   "packageType": "mods",
   "websiteURL": "https://phimmoie.fm/",
