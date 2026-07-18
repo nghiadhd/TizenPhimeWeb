@@ -55,35 +55,29 @@
   }
   function killImg(img) { hide(img.closest('a') || img); }
 
-  // 0c) Strip JW Player's ad config. The site calls jwplayer(id).setup({advertising})
-  // to schedule a VAST pre-roll; deleting `advertising` at setup makes JW skip ads
-  // and play the movie directly — cleaner than aborting the VAST request (which
-  // stalls the ad plugin). We wrap window.jwplayer the moment their lib assigns it.
-  try {
-    var _jw;
-    Object.defineProperty(window, 'jwplayer', {
-      configurable: true,
-      get: function () { return _jw; },
-      set: function (lib) {
-        // Proxy forwards every property (incl. non-enumerable JW internals/.key)
-        // to the real lib; only the call is intercepted to strip ad config.
-        _jw = (typeof Proxy === 'function' && typeof lib === 'function') ? new Proxy(lib, {
-          apply: function (target, thisArg, args) {
-            var inst = Reflect.apply(target, thisArg, args);
-            if (inst && typeof inst.setup === 'function' && !inst.__tpwebPatched) {
-              var origSetup = inst.setup;
-              inst.setup = function (cfg) {
-                try { if (cfg) { delete cfg.advertising; delete cfg.ads; } } catch (e) {}
-                return origSetup.call(this, cfg);
-              };
-              inst.__tpwebPatched = true;
-            }
-            return inst;
+  // 0c) Skip the JW Player pre-roll (a betting VAST video ad from adcenter.cx).
+  // We must NOT wrap window.jwplayer — doing so breaks JW's own setup and the
+  // player never mounts. Instead poll for the mounted instance and skip any ad
+  // the moment it starts, via JW's own event API. Non-destructive to the player.
+  (function killJwAds() {
+    var tries = 0;
+    var iv = setInterval(function () {
+      try {
+        if (window.jwplayer) {
+          var p = window.jwplayer();
+          if (p && typeof p.on === 'function' && typeof p.getState === 'function') {
+            var skip = function () { try { p.skipAd && p.skipAd(); } catch (e) {} };
+            p.on('adStarted', skip);
+            p.on('adImpression', skip);
+            p.on('adPlay', skip);
+            p.on('adBreakStart', skip);
+            clearInterval(iv);
           }
-        }) : lib;
-      }
-    });
-  } catch (e) {}
+        }
+      } catch (e) {}
+      if (++tries > 80) clearInterval(iv);
+    }, 200);
+  })();
 
   // 1) Kill popups / popunders — the worst offender on free phim sites.
   try { window.open = function () { return null; }; } catch (e) {}
