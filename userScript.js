@@ -31,14 +31,15 @@
     (document.head || document.documentElement).appendChild(st);
   } catch (e) {}
 
-  // Any image from a non-whitelisted cross-origin host is an ad here: all real
-  // posters/thumbs on phimmoie are same-origin (or whitelisted CDNs). Remove the
-  // image and its click wrapper so no betting banner flashes before CSS/observer.
+  // Ad images are matched by KNOWN ad host only (AD regex, e.g. adcenter.cx).
+  // Do NOT blanket-block cross-origin images: legit posters come from CDNs like
+  // img.ophim.live, and killing them would delete real movie cards.
   function isAdImg(img) {
     var src = img.currentSrc || img.src || (img.getAttribute && img.getAttribute('src')) || '';
     if (!src) return false;
     var h = hostOf(src);
-    return !!(h && h !== location.hostname && !WHITELIST.test(h));
+    if (h && WHITELIST.test(h)) return false;
+    return AD.test(String(src));
   }
   function killImg(img) { try { (img.closest('a') || img).remove(); } catch (e) { try { img.remove(); } catch (e2) {} } }
 
