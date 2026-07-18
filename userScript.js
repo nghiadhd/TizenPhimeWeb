@@ -20,6 +20,31 @@
     return !!(h && h !== location.hostname && !WHITELIST.test(h));
   }
 
+  // 0a) Drop the one-shot trusted-click popunder at registration. phimmoie adds a
+  // capture `click` listener on window shaped like
+  //   t => { t.isTrusted && (B(n), removeEventListener(t.type, o, {capture:true})) }
+  // that redirects the whole tab to a betting site (yo88.sbs) on the first real
+  // click — anywhere, including the vietsub/server buttons (which aren't links, so
+  // the link-hijack can't catch them). We refuse to register any nav-type listener
+  // whose body gates on isTrusted AND self-removes / navigates: the signature of a
+  // user-activation popunder. Runs at document-start, before the site registers it.
+  try {
+    var _origAEL = EventTarget.prototype.addEventListener;
+    var NAV_EV = /^(click|auxclick|mousedown|mouseup|pointerdown|pointerup|touchstart|touchend)$/i;
+    EventTarget.prototype.addEventListener = function (type, fn, opts) {
+      try {
+        if (fn && NAV_EV.test(type) && (this === window || this === document || this === document.documentElement || this === document.body)) {
+          var src = (typeof fn === 'function') ? Function.prototype.toString.call(fn)
+            : (fn.handleEvent ? Function.prototype.toString.call(fn.handleEvent) : '');
+          if (/isTrusted/.test(src) && /removeEventListener|location|open\s*\(|\.href|\.assign|\.replace/.test(src)) {
+            return; // popunder — do not register
+          }
+        }
+      } catch (e) {}
+      return _origAEL.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // 0) Hide the site's OWN ad slots at document-start so they never render.
   // phimmoie fills <div class="ads-banner"> with betting ("nhà cái") banners
   // client-side; there's no close button and no mouse on the TV, so remove them
@@ -260,12 +285,23 @@
       var now = Date.now();
       vel = (dir === lastDir && now - lastT < 260) ? Math.min(vel * 1.4, 95) : 26;
       lastDir = dir; lastT = now;
-      cx = Math.max(3, Math.min((window.innerWidth || 1280) - 3, cx + dx * vel));
-      cy = Math.max(3, Math.min((window.innerHeight || 720) - 3, cy + dy * vel));
+      var W = window.innerWidth || 1280, H = window.innerHeight || 720;
+      cx = Math.max(3, Math.min(W - 3, cx + dx * vel));
+      cy = Math.max(3, Math.min(H - 3, cy + dy * vel));
       draw();
-      var edge = 90;
-      if (dy > 0 && cy > (window.innerHeight - edge)) window.scrollBy(0, vel);
-      else if (dy < 0 && cy < edge) window.scrollBy(0, -vel);
+      // Edge scrolling: near the top/bottom edge and pushing that way, scroll the
+      // page so you can reach content past the fold; left/right at the side edges
+      // scrolls a horizontally-scrollable row under the cursor.
+      var edge = 120, sc = Math.max(vel, 55);
+      if (dy > 0 && cy > H - edge) window.scrollBy(0, sc);
+      else if (dy < 0 && cy < edge) window.scrollBy(0, -sc);
+      if (dx !== 0 && (cx > W - edge || cx < edge)) {
+        var row = document.elementFromPoint(Math.max(3, Math.min(W - 3, cx)), cy);
+        for (var g = 0; g < 6 && row; g++) {
+          if (row.scrollWidth > row.clientWidth + 8) { row.scrollLeft += dx * sc; break; }
+          row = row.parentElement;
+        }
+      }
       hover();
     }
     function hover() {
