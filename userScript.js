@@ -55,6 +55,20 @@
   }
   function killImg(img) { hide(img.closest('a') || img); }
 
+  // The site marks EVERY ad-close button with class `no-ads-under` (both the fixed
+  // banner "Tắt QC ✕" and the full-screen "Đóng QC ✕" modal that covers the home
+  // screen). Hide the whole overlay so there's nothing to close — the TV has no
+  // mouse. We hide the nearest fixed-position ad container (never a real modal,
+  // since only ad overlays carry a `.no-ads-under` button).
+  function hideAdOverlays(root) {
+    try {
+      var closers = root.querySelectorAll ? root.querySelectorAll('.no-ads-under') : [];
+      for (var i = 0; i < closers.length; i++) {
+        hide(closers[i].closest('.ads-banner, .fixed, [class*="inset-0"]') || closers[i].parentElement);
+      }
+    } catch (e) {}
+  }
+
   // 0b) Neutralise the JW pre-roll at the source: the player fetches a VAST ad tag
   // from phimmoie.fm/storage/ads/.../vast/...xml (the ad VIDEO lives on adcenter.cx).
   // Returning an EMPTY-but-valid VAST makes JW cleanly report "no ad" and play the
@@ -117,8 +131,12 @@
     }, 200);
   })();
 
-  // 1) Kill popups / popunders — the worst offender on free phim sites.
-  try { window.open = function () { return null; }; } catch (e) {}
+  // 1) Kill popups / popunders — the worst offender on free phim sites. Define as
+  // a getter with a no-op setter so an ad script can't restore the native open().
+  try {
+    var _noopen = function () { return null; };
+    Object.defineProperty(window, 'open', { configurable: true, get: function () { return _noopen; }, set: function () {} });
+  } catch (e) { try { window.open = function () { return null; }; } catch (e2) {} }
 
   // Block popunder click-throughs (cross-origin target=_blank links).
   ['click', 'mousedown', 'pointerdown', 'touchstart', 'auxclick', 'contextmenu'].forEach(function (type) {
@@ -171,6 +189,8 @@
       // Cross-origin ad images (adcenter.cx etc.) anywhere on the page.
       var imgs = root.querySelectorAll ? root.querySelectorAll('img') : [];
       for (var m = 0; m < imgs.length; m++) if (isAdImg(imgs[m])) killImg(imgs[m]);
+      // Full-screen ad modals / banners (identified by their `.no-ads-under` closer).
+      hideAdOverlays(root);
     } catch (e) {}
   }
   var obs = new MutationObserver(function (muts) {
