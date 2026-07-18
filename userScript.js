@@ -240,8 +240,10 @@
       // slight zoom so the focused item clearly stands out from across the room.
       fcss.textContent =
         '.tpweb-focus{outline:none!important;' +
-        'box-shadow:0 0 0 4px #ff2b2b,0 0 18px 7px rgba(255,43,43,.75)!important;' +
-        'transform:scale(1.05)!important;z-index:99999!important;' +
+        // inset ring draws INSIDE the element (never clipped by a row's overflow),
+        // outer ring + glow draw outside — together always visible on the TV.
+        'box-shadow:inset 0 0 0 4px #ff2b2b,0 0 0 4px #ff2b2b,0 0 22px 8px rgba(255,43,43,.85)!important;' +
+        'transform:scale(1.06)!important;z-index:99999!important;' +
         'transition:transform .1s ease!important;scroll-margin:140px!important}';
       (document.head || document.documentElement).appendChild(fcss);
     } catch (e) {}
