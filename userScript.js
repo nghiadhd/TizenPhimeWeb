@@ -98,6 +98,13 @@
           Object.defineProperty(xhr, 'status', { configurable: true, value: 200 });
           Object.defineProperty(xhr, 'responseText', { configurable: true, value: EMPTY_VAST });
           Object.defineProperty(xhr, 'response', { configurable: true, value: EMPTY_VAST });
+          // Some VAST parsers read responseXML (browser-parsed XML DOM) instead of
+          // parsing responseText themselves — without this, JW may hang waiting for
+          // a responseXML that never arrives, instead of cleanly reporting "no ad".
+          try {
+            var xmlDoc = new DOMParser().parseFromString(EMPTY_VAST, 'text/xml');
+            Object.defineProperty(xhr, 'responseXML', { configurable: true, value: xmlDoc });
+          } catch (e2) {}
         } catch (e) {}
         setTimeout(function () {
           try { if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange(); } catch (e) {}
@@ -372,5 +379,232 @@
     setInterval(function () { try { ensure(); if (cur) cur.style.zIndex = '2147483647'; } catch (e) {} }, 1500);
   })();
 
-  console.log('[TizenPhimWeb] ad-block + virtual cursor active on ' + location.hostname);
+  // 5) CUSTOM PLAYER. phimmoie's own JW player is where the black screen (ad→
+  // content source-swap on one <video> element likely freezing Tizen's hw decode
+  // plane) and the fused-handler popunders on vietsub/server buttons both live. We
+  // bypass it entirely: extract the movie's own .m3u8 via network sniffing while JW
+  // resolves it INVISIBLY in the background (its container hidden from the start),
+  // then play that URL in our OWN fresh <video>+hls.js — same proven config as the
+  // sibling TizenPhim app. The user never sees or touches JW's UI or its buttons, so
+  // the popunder never has anything to fire from. Only runs on episode/player pages;
+  // our link-hijack does full page loads (not SPA routing), so this check at
+  // script-start reliably reflects the current page every time.
+  (function customPlayer() {
+    if (!/\/tap-\d+/i.test(location.pathname)) return;
+
+    // Do NOT hide phimmoie's own player container — hiding it before JW ever
+    // initializes seems to stop JW's setup from running at all (jwplayer() returns
+    // the bare namespace, no player instance, no getState). Let JW initialize
+    // completely untouched underneath; our poster is a full-screen z-index:999998
+    // overlay with an opaque background, so it visually covers the JW area
+    // regardless of that area's own hidden state — no need to touch it at all.
+
+    // Extraction has two independent signals, combined:
+    //  1) PRIMARY — JW's own event API. `firstFrame`/`playlistItem` fire with the
+    //     resolved source once JW has it. The initial `sources:[{file:"/1s_blank.mp4"}]`
+    //     from setup is NOT a placeholder that's silently replaced — it's genuinely
+    //     what plays if nothing else is selected, so we must keep listening past a
+    //     blank-file event rather than treating the first firstFrame as final.
+    //  2) BACKUP — network sniffing (chained onto the existing VAST-blocking fetch/
+    //     XHR wrappers) in case a source is fetched via .m3u8 directly.
+    var resolvedUrl = null, resolvedWaiters = [];
+    function onResolved(cb) { if (resolvedUrl) cb(resolvedUrl); else resolvedWaiters.push(cb); }
+    function captureResolved(u) {
+      if (resolvedUrl || !u || /1s_blank\.mp4/i.test(String(u))) return; // ignore the dummy clip
+      resolvedUrl = String(u);
+      var w = resolvedWaiters; resolvedWaiters = [];
+      for (var i = 0; i < w.length; i++) { try { w[i](resolvedUrl); } catch (e) {} }
+    }
+    function captureFromPlaylistItem(item) {
+      if (!item) return;
+      if (item.file) captureResolved(item.file);
+      if (item.sources && item.sources.length) {
+        for (var i = 0; i < item.sources.length; i++) if (item.sources[i].file) captureResolved(item.sources[i].file);
+      }
+    }
+    // Backup signal: chain onto the fetch/XHR already wrapped above (for
+    // VAST-blocking) to also catch a .m3u8 fetched directly, in case some
+    // source/server routes through fetch/XHR rather than JW's internal resolution.
+    try {
+      var _fetchP = window.fetch;
+      window.fetch = function (input) {
+        var u = input && input.url ? input.url : input;
+        if (/\.m3u8(\?|$)/i.test(String(u))) captureResolved(u);
+        return _fetchP.apply(this, arguments);
+      };
+    } catch (e) {}
+    try {
+      var _openP = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (m, u) {
+        if (/\.m3u8(\?|$)/i.test(String(u))) captureResolved(u);
+        return _openP.apply(this, arguments);
+      };
+    } catch (e) {}
+
+    var poster, statusEl, started = false;
+    function el(tag, css, parent) {
+      var e = document.createElement(tag);
+      if (css) e.style.cssText = css;
+      (parent || document.body).appendChild(e);
+      return e;
+    }
+    function buildPoster() {
+      poster = el('div', 'position:fixed;inset:0;z-index:999998;background:#000;display:flex;' +
+        'align-items:center;justify-content:center;flex-direction:column;gap:16px');
+      var title = (document.title || '').replace(/\s*-\s*PhimMoi.*$/i, '').replace(/^Xem phim\s*/i, '');
+      var titleEl = el('div', 'color:#fff;font-size:1.4rem;font-weight:600;text-align:center;max-width:80%', poster);
+      titleEl.textContent = title;
+      var btn = el('div', 'width:88px;height:88px;border-radius:50%;background:rgba(255,43,43,.9);' +
+        'display:flex;align-items:center;justify-content:center;font-size:2.2rem;color:#fff;cursor:pointer', poster);
+      btn.id = 'tpweb-play-btn';
+      btn.textContent = '▶';
+      statusEl = el('div', 'color:#aaa;font-size:.95rem;min-height:1.2em', poster);
+      btn.addEventListener('click', startExtraction);
+    }
+    function setStatus(t) { if (statusEl) statusEl.textContent = t; }
+
+    function loadHlsJs(cb) {
+      if (window.Hls) return cb();
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+      s.onload = cb;
+      s.onerror = function () { setStatus('Không tải được trình phát. Thử lại.'); started = false; };
+      document.head.appendChild(s);
+    }
+
+    // The player's initial `sources:[{file:"/1s_blank.mp4"}]` is genuinely what
+    // plays if nothing else is selected — pressing Play alone never resolves past
+    // it. A server (e.g. "S - Vietsub") must be explicitly selected first, same as
+    // a real visitor would. That control is a plain <button> (not a link) whose own
+    // click handler ALSO attempts the popunder redirect — but our anchor-click patch
+    // already neutralises that mechanism regardless of what triggers it, so clicking
+    // it here is safe; only its legitimate "select this source" behavior takes effect.
+    function selectDefaultServer() {
+      var b = [].slice.call(document.querySelectorAll('button')).filter(function (e) {
+        if (e.offsetParent === null) return false;
+        var t = (e.textContent || '').trim();
+        return t.length < 20 && /vietsub|thuyết minh|sv\s*\d/i.test(t);
+      })[0];
+      if (b) { try { b.click(); } catch (e) {} }
+      return !!b;
+    }
+
+    function startExtraction() {
+      if (started) return; started = true;
+      setStatus('Đang tải phim…');
+      selectDefaultServer();
+      var tries = 0;
+      var iv = setInterval(function () {
+        try {
+          if (window.jwplayer) {
+            var p = window.jwplayer();
+            if (p && typeof p.play === 'function') {
+              // Listen on JW's own event API — the authoritative source for what's
+              // actually resolved, since network sniffing doesn't reliably see it.
+              try {
+                p.on('playlistItem', function (data) { captureFromPlaylistItem(data); });
+                p.on('firstFrame', function () { try { captureFromPlaylistItem(p.getPlaylistItem()); } catch (e) {} });
+              } catch (e) {}
+              p.play(true);
+              clearInterval(iv);
+            }
+          }
+        } catch (e) {}
+        if (++tries > 50 && !resolvedUrl) { clearInterval(iv); setStatus('Không tìm thấy trình phát. Thử lại.'); started = false; }
+      }, 500); // give selectDefaultServer's React state update time to settle before play()
+      var slow = setTimeout(function () { if (!resolvedUrl) setStatus('Đang chờ nguồn phim…'); }, 6000);
+      var giveUp = setTimeout(function () {
+        if (!resolvedUrl) { setStatus('Không lấy được nguồn phim. Thử lại.'); started = false; }
+      }, 25000);
+      onResolved(function (url) {
+        clearTimeout(slow); clearTimeout(giveUp);
+        loadHlsJs(function () { mountPlayer(url); });
+      });
+    }
+
+    function mountPlayer(url) {
+      if (poster) { poster.remove(); poster = null; }
+      var wrap = el('div', 'position:fixed;inset:0;z-index:999998;background:#000');
+      var video = document.createElement('video');
+      video.setAttribute('playsinline', '');
+      video.style.cssText = 'width:100%;height:100%;background:#000';
+      wrap.appendChild(video);
+      var bar = el('div', 'position:fixed;left:0;right:0;bottom:0;z-index:999999;padding:14px 24px;' +
+        'background:linear-gradient(transparent,rgba(0,0,0,.85));display:flex;align-items:center;gap:14px;' +
+        'color:#fff;font-size:1rem;font-family:sans-serif');
+      var playIcon = el('div', 'font-size:1.4rem;width:1.5em', bar);
+      playIcon.textContent = '⏸';
+      var timeEl = el('div', 'white-space:nowrap', bar);
+      timeEl.textContent = '0:00 / 0:00';
+      var seekTrack = el('div', 'flex:1;height:4px;background:rgba(255,255,255,.25);border-radius:2px;position:relative', bar);
+      var seekFill = el('div', 'position:absolute;left:0;top:0;bottom:0;width:0%;background:#ff2b2b;border-radius:2px', seekTrack);
+
+      function fmt(s) { s = Math.max(0, s | 0); var m = (s / 60) | 0, r = s % 60; return m + ':' + (r < 10 ? '0' : '') + r; }
+      video.addEventListener('timeupdate', function () {
+        timeEl.textContent = fmt(video.currentTime) + ' / ' + fmt(video.duration || 0);
+        if (video.duration) seekFill.style.width = (video.currentTime / video.duration * 100) + '%';
+      });
+      video.addEventListener('play', function () { playIcon.textContent = '⏸'; });
+      video.addEventListener('pause', function () { playIcon.textContent = '▶'; });
+      video.addEventListener('error', function () {
+        var code = video.error && video.error.code;
+        setStatus('Lỗi phát video (#' + code + ')');
+      });
+
+      // Same proven config as the sibling TizenPhim app's 'normal' buffer preset —
+      // these streams' manifests are full of #EXT-X-DISCONTINUITY, which hls.js's
+      // software remuxer tolerates (native HLS decoders reject them outright).
+      var hls = new window.Hls({
+        backBufferLength: 30,
+        maxBufferLength: 60, maxMaxBufferLength: 120, maxBufferSize: 90 * 1000 * 1000,
+        fragLoadingMaxRetry: 8, fragLoadingRetryDelay: 1000,
+        manifestLoadingMaxRetry: 6, levelLoadingMaxRetry: 6,
+      });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play().catch(function () {}); });
+      hls.on(window.Hls.Events.ERROR, function (_e, data) {
+        if (data && data.fatal) setStatus('Lỗi phát HLS (' + data.type + '): ' + (data.details || ''));
+      });
+
+      // Playback keys — while our player is mounted, arrows/media-keys control
+      // playback directly (matching TizenPhim's remote UX) instead of driving the
+      // browsing cursor. No CSS transform is ever applied to this <video>, avoiding
+      // the hardware-plane issue the black screen investigation pointed at.
+      var PLAY = 415, PAUSE = 19, PLAYPAUSE = 10252, STOP = 413, FF = 417, REW = 412;
+      var BACK = 10009, LGBACK = 461;
+      function teardown() {
+        try { hls.destroy(); } catch (e) {}
+        wrap.remove(); bar.remove();
+        document.removeEventListener('keydown', onPlayerKey, true);
+      }
+      function onPlayerKey(ev) {
+        var k = ev.keyCode;
+        if (k === 37 || k === REW) {
+          ev.preventDefault(); ev.stopImmediatePropagation();
+          video.currentTime = Math.max(0, video.currentTime - 10);
+        } else if (k === 39 || k === FF) {
+          ev.preventDefault(); ev.stopImmediatePropagation();
+          video.currentTime = Math.min(video.duration || 1e9, video.currentTime + 10);
+        } else if (k === 13 || k === PLAYPAUSE) {
+          ev.preventDefault(); ev.stopImmediatePropagation();
+          if (video.paused) video.play().catch(function () {}); else video.pause();
+        } else if (k === PLAY) {
+          ev.preventDefault(); ev.stopImmediatePropagation(); video.play().catch(function () {});
+        } else if (k === PAUSE) {
+          ev.preventDefault(); ev.stopImmediatePropagation(); video.pause();
+        } else if (k === BACK || k === LGBACK || k === STOP) {
+          ev.preventDefault(); ev.stopImmediatePropagation();
+          teardown();
+          try { history.back(); } catch (e) {}
+        }
+      }
+      document.addEventListener('keydown', onPlayerKey, true);
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', buildPoster);
+    else buildPoster();
+  })();
+
+  console.log('[TizenPhimWeb] ad-block + virtual cursor + custom player active on ' + location.hostname);
 })();
