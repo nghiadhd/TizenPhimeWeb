@@ -144,15 +144,20 @@
 
   // Take over link navigation: same-origin links (films/episodes) we navigate
   // ourselves and stop the site's handlers (which piggyback a popunder redirect);
-  // cross-origin ad links are killed. NOTE: this covers link clicks only — the
-  // vietsub/server BUTTONS use a separate, non-link popunder vector (see notes).
+  // cross-origin ad links are killed. NOTE: this covers link clicks only. Non-link
+  // controls (vietsub/server buttons, play overlay) have the ad redirect FUSED into
+  // their own click handler via `location.href =` — confirmed via 4 failed sink
+  // probes (window.location setter, Location.prototype.href/assign/replace, CSP
+  // navigate-to — all either unforgeable or simply not the call site used). No
+  // event-level trick can separate "the button's real behavior" from the redirect
+  // because they're the same function body. This is NOT fixable from a userscript;
+  // see memory notes for the recommended pivot (own hls.js player, bypass the button
+  // entirely).
   function onNav(ev) {
     // Kill the redundant NATIVE trusted click Tizen emits for an OK press. Our
-    // virtual cursor already issued the intended action as a SYNTHETIC click (which
-    // the isTrusted-gated popunder ignores); Tizen ALSO fires a trusted click for
-    // the same OK, and THAT is what triggers yo88. If a synthetic cursor click just
-    // happened, swallow the trailing trusted click so the popunder never sees one.
-    // Guarded by the recency check so a stray trusted click never leaves the UI dead.
+    // virtual cursor already issued the intended action as a SYNTHETIC click; Tizen
+    // ALSO fires a trusted click for the same OK. Guarded by recency so a stray
+    // trusted click (real remote/mouse input) never leaves the UI dead.
     if (ev.isTrusted && (Date.now() - tpwebSyntheticTs) < 700 &&
         (ev.type === 'click' || ev.type === 'auxclick' || ev.type === 'mousedown' ||
          ev.type === 'mouseup' || ev.type === 'pointerdown' || ev.type === 'pointerup')) {
@@ -166,9 +171,6 @@
     var url; try { url = new URL(a.href, location.href); } catch (e) { return; }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
     if (url.hostname === location.hostname) {
-      // Legit same-origin navigation: do it ourselves, block the site's handlers
-      // (which piggyback the popunder). On click we navigate; on the earlier events
-      // we just stop the popunder from firing before the click lands.
       ev.stopImmediatePropagation();
       if (ev.type === 'click') { ev.preventDefault(); location.assign(url.href); }
     } else if (!WHITELIST.test(url.hostname)) {
@@ -310,12 +312,11 @@
       var el = document.elementFromPoint(cx, cy);
       if (cur) cur.style.display = '';
       if (!el) return;
-      tpwebSyntheticTs = Date.now(); // tell onNav laundering our cursor drove this click
+      tpwebSyntheticTs = Date.now(); // tell onNav to suppress the native gesture OK also emits
+      // ONLY a single `click` — a full pointerdown+up+click gesture trips the site's
+      // popunder, but a lone click still activates links / React / JW controls.
       var o = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
-      ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (ty) {
-        try { el.dispatchEvent(ty.indexOf('pointer') === 0 ? new PointerEvent(ty, o) : new MouseEvent(ty, o)); }
-        catch (e) { try { el.dispatchEvent(new MouseEvent(ty.replace('pointer', 'mouse'), o)); } catch (e2) {} }
-      });
+      try { el.dispatchEvent(new MouseEvent('click', o)); } catch (e) {}
     }
 
     document.addEventListener('keydown', function (ev) {
