@@ -55,6 +55,44 @@
   }
   function killImg(img) { hide(img.closest('a') || img); }
 
+  // 0b) Neutralise the JW pre-roll at the source: the player fetches a VAST ad tag
+  // from phimmoie.fm/storage/ads/.../vast/...xml (the ad VIDEO lives on adcenter.cx).
+  // Returning an EMPTY-but-valid VAST makes JW cleanly report "no ad" and play the
+  // movie immediately — no stall (unlike aborting), no touching the JW global.
+  var EMPTY_VAST = '<?xml version="1.0" encoding="UTF-8"?><VAST version="3.0"></VAST>';
+  function isVastReq(u) { try { return /\/storage\/ads\/|\/vast\/|[-_]vast\b|adcenter\.cx/i.test(String(u)); } catch (e) { return false; } }
+  try {
+    var _fetch = window.fetch;
+    if (_fetch) window.fetch = function (input) {
+      var u = input && input.url ? input.url : input;
+      if (isVastReq(u)) return Promise.resolve(new Response(EMPTY_VAST, { status: 200, headers: { 'Content-Type': 'text/xml' } }));
+      return _fetch.apply(this, arguments);
+    };
+  } catch (e) {}
+  try {
+    var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, u) { this.__tpwebVast = isVastReq(u); return _open.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function () {
+      var xhr = this;
+      if (xhr.__tpwebVast) {
+        try {
+          Object.defineProperty(xhr, 'readyState', { configurable: true, value: 4 });
+          Object.defineProperty(xhr, 'status', { configurable: true, value: 200 });
+          Object.defineProperty(xhr, 'responseText', { configurable: true, value: EMPTY_VAST });
+          Object.defineProperty(xhr, 'response', { configurable: true, value: EMPTY_VAST });
+        } catch (e) {}
+        setTimeout(function () {
+          try { if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange(); } catch (e) {}
+          try { xhr.dispatchEvent(new Event('readystatechange')); } catch (e) {}
+          try { if (typeof xhr.onload === 'function') xhr.onload(); } catch (e) {}
+          try { xhr.dispatchEvent(new Event('load')); } catch (e) {}
+        }, 0);
+        return;
+      }
+      return _send.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // 0c) Skip the JW Player pre-roll (a betting VAST video ad from adcenter.cx).
   // We must NOT wrap window.jwplayer — doing so breaks JW's own setup and the
   // player never mounts. Instead poll for the mounted instance and skip any ad
