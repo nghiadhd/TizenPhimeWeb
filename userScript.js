@@ -55,40 +55,6 @@
   }
   function killImg(img) { hide(img.closest('a') || img); }
 
-  // 0b) Block ad-network REQUESTS (fetch + XHR). The JW player pulls a VAST tag
-  // from adcenter.cx and pre-rolls a betting video ad; if the tag request fails,
-  // JW fires adError and plays the movie directly. Also guard the media element's
-  // src so an ad video URL never loads even if a VAST slips through.
-  function isAdReq(u) {
-    if (!u) return false;
-    try { var h = new URL(u, location.href).hostname; if (h && WHITELIST.test(h)) return false; } catch (e) {}
-    return AD.test(String(u));
-  }
-  try {
-    var _fetch = window.fetch;
-    if (_fetch) window.fetch = function (input) {
-      var u = input && input.url ? input.url : input;
-      if (isAdReq(u)) return Promise.reject(new Error('tpweb: blocked ad request'));
-      return _fetch.apply(this, arguments);
-    };
-  } catch (e) {}
-  try {
-    var _open = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (m, u) { this.__tpwebAd = isAdReq(u); return _open.apply(this, arguments); };
-    var _send = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function () { if (this.__tpwebAd) { try { this.abort(); } catch (e) {} return; } return _send.apply(this, arguments); };
-  } catch (e) {}
-  try {
-    var msd = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-    if (msd && msd.set) {
-      Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-        configurable: true,
-        get: function () { return msd.get.call(this); },
-        set: function (v) { if (AD.test(String(v))) return; msd.set.call(this, v); }
-      });
-    }
-  } catch (e) {}
-
   // 0c) Strip JW Player's ad config. The site calls jwplayer(id).setup({advertising})
   // to schedule a VAST pre-roll; deleting `advertising` at setup makes JW skip ads
   // and play the movie directly — cleaner than aborting the VAST request (which
