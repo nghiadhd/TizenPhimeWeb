@@ -235,10 +235,14 @@
   (function spatialNav() {
     try {
       var fcss = document.createElement('style');
+      // A glow ring (box-shadow follows the element's own rounded corners, unlike a
+      // rectangular outline which shows only corners on rounded TV cards) plus a
+      // slight zoom so the focused item clearly stands out from across the room.
       fcss.textContent =
-        '.tpweb-focus{outline:3px solid #ff2b2b!important;outline-offset:2px!important;' +
-        'box-shadow:0 0 0 3px rgba(255,43,43,.6)!important;border-radius:6px!important;' +
-        'scroll-margin:120px!important}';
+        '.tpweb-focus{outline:none!important;' +
+        'box-shadow:0 0 0 4px #ff2b2b,0 0 18px 7px rgba(255,43,43,.75)!important;' +
+        'transform:scale(1.05)!important;z-index:99999!important;' +
+        'transition:transform .1s ease!important;scroll-margin:140px!important}';
       (document.head || document.documentElement).appendChild(fcss);
     } catch (e) {}
 
