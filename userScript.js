@@ -138,16 +138,31 @@
     Object.defineProperty(window, 'open', { configurable: true, get: function () { return _noopen; }, set: function () {} });
   } catch (e) { try { window.open = function () { return null; }; } catch (e2) {} }
 
-  // Block popunder click-throughs (cross-origin target=_blank links).
-  ['click', 'mousedown', 'pointerdown', 'touchstart', 'auxclick', 'contextmenu'].forEach(function (type) {
-    document.addEventListener(type, function (ev) {
-      var a = ev.target && ev.target.closest && ev.target.closest('a[target="_blank"], a[href^="http"]');
-      if (a && a.href) {
-        var h = hostOf(a.href);
-        if (h && h !== location.hostname && !WHITELIST.test(h)) { ev.preventDefault(); ev.stopPropagation(); }
-      }
-    }, true);
-  }, true);
+  // Defeat the click-redirect popunder. phimmoie's OWN bundle does
+  // `location.href = <betting site>` on a film click (utm_medium=popunder → yo88.sbs
+  // etc.). location.href is unforgeable so we can't wrap it — instead we take over
+  // link clicks: navigate same-origin targets ourselves and stopImmediatePropagation
+  // so the site's popunder click handler never runs; cross-origin ad links are killed.
+  function onNav(ev) {
+    var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
+    if (!a) return;
+    var raw = a.getAttribute('href') || '';
+    if (!raw || raw.charAt(0) === '#' || /^(javascript|mailto|tel):/i.test(raw)) return;
+    var url; try { url = new URL(a.href, location.href); } catch (e) { return; }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+    if (url.hostname === location.hostname) {
+      // Legit same-origin navigation: do it ourselves, block the site's handlers
+      // (which piggyback the popunder). On click we navigate; on the earlier events
+      // we just stop the popunder from firing before the click lands.
+      ev.stopImmediatePropagation();
+      if (ev.type === 'click') { ev.preventDefault(); location.assign(url.href); }
+    } else if (!WHITELIST.test(url.hostname)) {
+      ev.preventDefault(); ev.stopImmediatePropagation(); // cross-origin ad link
+    }
+  }
+  ['click', 'mousedown', 'pointerdown', 'pointerup', 'mouseup', 'touchstart', 'auxclick', 'contextmenu'].forEach(function (type) {
+    document.addEventListener(type, onNav, true);
+  });
 
   // 2) Block ad scripts/iframes at creation (before they can load).
   try {
