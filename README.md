@@ -11,6 +11,9 @@ Cloudflare from your TV's home IP. You get the site's real UI and its **clean
 opstream90 streams** (0 discontinuities → no buffering), minus the ads.
 
 ## What the injected script does (`userScript.js`)
+
+See [AD_BLOCKING.md](AD_BLOCKING.md) for the full mechanism breakdown, the debugging history behind each fix, and known limitations/gaps.
+
 - **Blocks popunders/popups** — `window.open` is neutralised and cross-origin
   `target="_blank"` click-throughs are cancelled.
 - **Blocks ad networks at creation** — overrides `document.createElement` so ad
