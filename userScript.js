@@ -4,6 +4,18 @@
 (function () {
   'use strict';
 
+  // TizenBrew's CDP injection applies to every frame it sees navigate, not just
+  // the top-level page — including the fcloud.live <iframe> the "Vietsub #1"
+  // server embeds (now visible since it's whitelisted, no longer hidden as a
+  // false-positive ad). Running this WHOLE script a second time inside that
+  // iframe creates a second, independent virtual cursor scoped to the iframe's
+  // own document — which never receives keydown events fired at the top-level
+  // page, so it's visible but permanently uncontrollable (the exact "2 pointers,
+  // one I can't control" symptom). fcloud.live's own requests were already
+  // checked and found clean of ad-network domains, so none of this script's
+  // ad-blocking/popunder-defense is even needed inside it. Skip entirely there.
+  if (window.top !== window.self) return;
+
   // Hosts that are part of the site/player and must NEVER be touched.
   // fcloud.live: CONFIRMED via direct inspection this is the actual video CDN/player
   // host for the "Vietsub #1" server — phimmoie.fm embeds it as a cross-origin
@@ -446,8 +458,26 @@
         try { el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy, view: window })); } catch (e) {}
       }
     }
+    // Brief visual pulse on every OK press so it's obvious the press was received
+    // and a click was actually dispatched — separate from whatever the page does
+    // (or doesn't) do in response, which is otherwise invisible on a TV remote.
+    function flashClick() {
+      if (!cur) return;
+      cur.style.setProperty('transition', 'none', 'important');
+      cur.style.setProperty('transform', 'translate(-50%,-50%) scale(1.8)', 'important');
+      cur.style.setProperty('background', 'rgba(255,255,255,.85)', 'important');
+      cur.style.setProperty('border-color', '#fff', 'important');
+      setTimeout(function () {
+        if (!cur) return;
+        cur.style.setProperty('transition', 'transform .12s ease,background .12s ease,border-color .12s ease');
+        cur.style.setProperty('transform', 'translate(-50%,-50%) scale(1)', 'important');
+        cur.style.setProperty('background', 'rgba(255,43,43,.30)', 'important');
+        cur.style.setProperty('border-color', '#ff2b2b', 'important');
+      }, 130);
+    }
     function clickAt() {
       ensure();
+      flashClick();
       if (cur) cur.style.display = 'none';
       var el = document.elementFromPoint(cx, cy);
       if (cur) cur.style.display = '';
@@ -478,133 +508,6 @@
     else setTimeout(ensure, 500);
     // keep the cursor alive across SPA re-renders that wipe body children
     setInterval(function () { try { ensure(); if (cur) cur.style.zIndex = '2147483647'; } catch (e) {} }, 1500);
-  })();
-
-  // 5) DIAGNOSTIC (non-intrusive — a small corner label, never covers the video).
-  // Reports ground truth on JW's own video: real pixel dimensions (proves whether
-  // decode is happening at all), whether anything sits on top of it, and any
-  // ancestor carrying a disqualifying CSS property. No URL gate, no "wait until
-  // currentTime crosses a threshold" — those are exactly the kind of assumption
-  // that can silently suppress the one signal we need (e.g. if video decode is
-  // stuck at t=0 while audio plays through a separate path, a threshold-gated
-  // report would never fire — but "stuck at t=0" IS the finding). Shows live,
-  // continuously-updating state for every <video> on the page, starting the
-  // moment one exists, so it can't fail to show *something*.
-  (function playerDiagnostic() {
-    var badge;
-    function ensureBadge() {
-      if (badge && document.body && document.body.contains(badge)) return;
-      // This exact call — (document.body||document.documentElement).appendChild —
-      // is what threw "Cannot read properties of null (reading 'appendChild')" in
-      // testing: both can be null this early. Guard directly instead of throwing,
-      // which previously aborted the rest of this IIFE (tick/hookJw never ran).
-      var root = document.body || document.documentElement;
-      if (!root) return;
-      badge = document.createElement('div');
-      badge.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;max-width:60vw;' +
-        'background:rgba(0,0,0,.7);color:#0f0;font:11px/1.4 monospace;padding:5px 8px;' +
-        'border-radius:6px;white-space:pre-wrap;pointer-events:none';
-      root.appendChild(badge);
-    }
-    function suspectAncestors(el) {
-      var bad = [], n = el, depth = 0;
-      while (n && depth < 8) {
-        try {
-          var s = getComputedStyle(n);
-          var flags = [];
-          if (s.filter && s.filter !== 'none') flags.push('filter=' + s.filter);
-          if (s.transform && s.transform !== 'none') flags.push('transform');
-          if (s.opacity && parseFloat(s.opacity) < 1) flags.push('opacity=' + s.opacity);
-          if (s.mixBlendMode && s.mixBlendMode !== 'normal') flags.push('blend=' + s.mixBlendMode);
-          if (s.backdropFilter && s.backdropFilter !== 'none') flags.push('backdrop-filter');
-          if (s.display === 'none' || s.visibility === 'hidden') flags.push('HIDDEN(' + s.display + '/' + s.visibility + ')');
-          if (flags.length) bad.push((n.tagName || '?') + '.' + String(n.className || '').slice(0, 20) + '[' + flags.join(',') + ']');
-        } catch (e) {}
-        n = n.parentElement; depth++;
-      }
-      return bad;
-    }
-    function describeVideo(v, idx) {
-      try {
-        var r = v.getBoundingClientRect();
-        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-        var topEl = document.elementFromPoint(cx, cy);
-        var coveredBy = (topEl && topEl !== v && !v.contains(topEl)) ? (topEl.tagName + '.' + String(topEl.className || '').slice(0, 20)) : 'nothing';
-        var bad = suspectAncestors(v);
-        return '#' + idx + ' size=' + v.videoWidth + 'x' + v.videoHeight + ' rect=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-          ' ready=' + v.readyState + ' paused=' + v.paused + ' t=' + v.currentTime.toFixed(1) + ' src=' + (v.currentSrc ? 'yes' : 'no') +
-          '\n  coveredBy=' + coveredBy + '\n  hazards=' + (bad.length ? bad.join(' | ') : 'none');
-      } catch (e) { return '#' + idx + ' err=' + e.message; }
-    }
-    // Sticky log: a video element can exist only briefly (site re-renders, our own
-    // page reload on nav) — a live-only snapshot can miss that entirely, which is
-    // exactly what happened (badge showed real data once, then reverted to "no
-    // video" and stayed there). Keep every MEANINGFULLY DISTINCT state we've ever
-    // seen, most recent last — deduped on a signature that EXCLUDES currentTime
-    // (which changes every tick during normal playback and would otherwise spam
-    // a "new" line every second even when nothing relevant changed). A separate
-    // always-current "now" line on top shows live currentTime/paused.
-    var log = [], lastSig = '', nowLine = 'now: (init)';
-    var seenAt = Date.now();
-    function render() { if (badge) badge.textContent = nowLine + '\n---- log ----\n' + log.join('\n'); }
-    function pushLog(s) {
-      var t = ((Date.now() - seenAt) / 1000).toFixed(0) + 's';
-      log.push('[' + t + '] ' + s);
-      if (log.length > 14) log.shift();
-      render();
-    }
-    // The video element appearing then DISAPPEARING (not just staying at 0x0) is a
-    // different finding than "black while playing" — it means the player is
-    // crashing/tearing itself down before ever reaching a playing state. Capture
-    // any JS error or unhandled rejection during this session, since that's the
-    // most likely direct cause of an unexpected teardown.
-    try {
-      window.addEventListener('error', function (ev) {
-        pushLog('JS ERROR: ' + (ev.message || '?') + ' @ ' + (ev.filename || '?').split('/').pop() + ':' + ev.lineno);
-      });
-      window.addEventListener('unhandledrejection', function (ev) {
-        var r = ev.reason;
-        pushLog('UNHANDLED REJECTION: ' + (r && r.message ? r.message : String(r)).slice(0, 80));
-      });
-    } catch (e) {}
-    // Also hook JW's own error-family events directly, if/when a player instance
-    // shows up — these often fire right before JW tears its own DOM down.
-    var jwHooked = false;
-    function hookJw() {
-      if (jwHooked || !window.jwplayer) return;
-      try {
-        var p = window.jwplayer();
-        if (!p || typeof p.on !== 'function') return;
-        ['error', 'setupError', 'adError'].forEach(function (evt) {
-          p.on(evt, function (data) { pushLog('JW ' + evt + ': ' + JSON.stringify(data).slice(0, 100)); });
-        });
-        jwHooked = true;
-      } catch (e) {}
-    }
-    ensureBadge(); // create the badge up-front, before any video ever exists
-    render();
-    function tick() {
-      ensureBadge(); // retry — the very first call above can silently no-op if
-      // document.body/documentElement were still null at that exact instant.
-      hookJw();
-      var vids = document.querySelectorAll('video');
-      var sig, body;
-      if (!vids.length) {
-        sig = 'novideo';
-        body = 'no <video> element';
-      } else {
-        var d = describeVideo(vids[0], 0).replace(/\n\s*/g, ' ');
-        // Signature = same description but with the volatile t=X.X and paused=X
-        // stripped, so only size/ready/src/coveredBy/hazards changes count as new.
-        sig = vids.length + '|' + d.replace(/ t=[\d.]+/, '').replace(/paused=(true|false)/, '');
-        body = '(' + vids.length + ') ' + d;
-      }
-      nowLine = 'now: ' + body;
-      if (sig !== lastSig) { pushLog(body); lastSig = sig; } else { render(); }
-    }
-    setInterval(tick, 300); // fast polling — the video element has been observed to
-    // appear only briefly before disappearing again; a 1s interval could straddle
-    // and miss that window entirely.
   })();
 
   console.log('[TizenPhimWeb] ad-block + virtual cursor active on ' + location.hostname);
