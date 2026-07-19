@@ -352,7 +352,23 @@
       var imgs = root.querySelectorAll ? root.querySelectorAll('img') : [];
       for (var m = 0; m < imgs.length; m++) if (isAdImg(imgs[m])) killImg(imgs[m]);
       // Full-screen ad modals / banners (identified by their `.no-ads-under` closer).
-      hideAdOverlays(root);
+      // ALWAYS scan the whole document here, not just `root`. CONFIRMED live: when
+      // a modal's `.no-ads-under` closer button gets inserted as its OWN mutation
+      // node (the modal shell already existed; only the button was appended into
+      // it), sweep(root) is called with root = that button. `root.querySelectorAll
+      // ('.no-ads-under')` NEVER matches root itself, only descendants — so the
+      // closer button (which IS the match, not a descendant of itself) is missed
+      // entirely, and the whole full-viewport `position:fixed` ad backdrop (real
+      // case seen: a `z-[9999]`, `pointer-events:auto` "Đóng QC ✕" overlay) is
+      // never hidden. It then sits on top of the ENTIRE page, including the video
+      // player, silently eating every click — this is what made the JW Player
+      // controls (skip-ad, fullscreen) completely unclickable. These overlays are
+      // page-global fixed backdrops anyway, so scoping the scan to a mutation
+      // subtree was never actually meaningful; `document` is the correct scope
+      // and closes this gap for any insertion shape (button-only, shell-only,
+      // wrapped, or reparented). `hide()`'s `data-tpweb-hidden` marker keeps
+      // repeated document-wide sweeps cheap (no-ops on already-hidden targets).
+      hideAdOverlays(document);
     } catch (e) {}
   }
   var obs = new MutationObserver(function (muts) {
