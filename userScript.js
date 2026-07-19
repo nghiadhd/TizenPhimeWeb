@@ -68,7 +68,17 @@
     try {
       var closers = root.querySelectorAll ? root.querySelectorAll('.no-ads-under') : [];
       for (var i = 0; i < closers.length; i++) {
-        hide(closers[i].closest('.ads-banner, .fixed, [class*="inset-0"]') || closers[i].parentElement);
+        var target = closers[i].closest('.ads-banner, .fixed, [class*="inset-0"]') || closers[i].parentElement;
+        // `.fixed`/`[class*="inset-0"]` are broad, common Tailwind classes — a
+        // player in fullscreen/theater mode very plausibly uses the SAME classes.
+        // Never hide anything that IS or CONTAINS the video player, however close
+        // a match it looks like — that would take the whole player down, not just
+        // an ad. Fall back to hiding only the closer button itself in that case
+        // (harmless — a leftover invisible button, not the player).
+        if (target && (target.querySelector('video') || target.matches('[class*="aspect-video"]') || target.contains(document.querySelector('[class*="aspect-video"]')))) {
+          target = closers[i];
+        }
+        hide(target);
       }
     } catch (e) {}
   }
