@@ -451,10 +451,19 @@
       var unsafe = t && (t.tagName === 'VIDEO' || containsVideo(t));
       if (t && !unsafe) { try { t.style.setProperty('filter', 'brightness(1.3)'); } catch (e) {} lastHover = t; }
       else lastHover = null;
-      // Skip the synthetic mousemove entirely inside the player region (anything
-      // that IS or CONTAINS a video) — no legitimate reason to trigger :hover
-      // there, only risk.
-      if (el && !(el.tagName === 'VIDEO' || el.closest && el.closest('[class*="aspect-video"]'))) {
+      // Dispatch mousemove everywhere, INCLUDING the player region — this was
+      // previously suppressed there entirely, which broke JW's own controls: like
+      // most video players, JW needs mousemove to know the user is interacting
+      // before it reveals/arms its control bar (skip/play-pause/maximize), so
+      // clicks landed on visually-present-but-unarmed buttons and silently did
+      // nothing. mousemove is a PLAIN EVENT with no CSS/compositing effect of its
+      // own — it carries none of the hardware-video-plane risk that the explicit
+      // `filter` styling above does (which stays excluded from the video/its
+      // ancestors). The only residual, much narrower risk is if the SITE'S OWN
+      // CSS has a `:hover` rule applying filter/transform directly to the video
+      // element itself — excluding just the video tag (not the whole region)
+      // covers that without breaking every control around it.
+      if (el && el.tagName !== 'VIDEO') {
         try { el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy, view: window })); } catch (e) {}
       }
     }
