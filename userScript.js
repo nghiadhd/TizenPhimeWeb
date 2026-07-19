@@ -111,42 +111,92 @@
   // through untouched (JW's normal, presumably better-tested code path), and 0c
   // below skips the ad via its OWN supported, intentional skipAd() action instead.
 
-  // 0c) Skip the JW Player pre-roll (a betting VAST video ad from adcenter.cx) via
-  // JW's own supported skip action — not by feeding it an error condition. We must
-  // NOT wrap window.jwplayer — doing so breaks JW's own setup and the player never
-  // mounts. Poll for the mounted instance, then keep retrying skipAd() for the
-  // duration of the ad: the site configures a 5s `skipoffset`, so an immediate
-  // skipAd() call right on adStarted likely no-ops (not skippable yet) — retry
-  // every second until the ad is gone, rather than a single one-shot attempt.
+  // 0c) Skip JW Player ad breaks (a betting VAST video ad from adcenter.cx; can be
+  // pre-roll and/or mid-roll — CONFIRMED live: a second skippable button appeared
+  // ~40s into playback on a run that had already cleanly skipped the pre-roll) by
+  // clicking the site's OWN real skip button — NOT via JW's skipAd() API. CONFIRMED
+  // by a controlled A/B test (macOS Chrome, MCP-driven, see debugging session): the
+  // previous implementation here (polling p.skipAd() via the JW JS API every 1s from
+  // adStarted) reliably made the site tear down the native inline player and fall
+  // back to a cross-origin iframe (fcloud.live/cinema/...) that never renders —
+  // permanent black screen + spinner. The control run (this whole script absent)
+  // played 26+s straight with no iframe fallback at all. Root cause isolated to the
+  // skipAd() API call itself, not to ad-skipping in general. Fix: never touch the JW
+  // API for this — watch for the real `.jw-skip` button to gain its `jw-skippable`
+  // modifier class (JW's own "now clickable" signal, confirmed via DOM inspection:
+  // `<div class="jw-skip jw-reset jw-skippable" role="button">`) and dispatch a
+  // genuine click on it, exactly mimicking what a real viewer's click does. Runs for
+  // the whole page lifetime (not one-shot) so a later mid-roll break also gets
+  // skipped, re-arming once the just-clicked button is gone from the DOM.
   (function killJwAds() {
-    var tries = 0, skipIv = null;
-    var iv = setInterval(function () {
+    var lastClicked = null;
+    function findSkipBtn() {
+      var btns = document.querySelectorAll('.jw-skip');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].classList.contains('jw-skippable')) return btns[i];
+      }
+      return null;
+    }
+    setInterval(function () {
+      var btn = findSkipBtn();
+      if (!btn) { lastClicked = null; return; } // no skippable button right now — re-armed for next break
+      if (btn === lastClicked) return; // already clicked this exact button, waiting for it to clear
+      lastClicked = btn;
       try {
-        if (window.jwplayer) {
-          var p = window.jwplayer();
-          if (p && typeof p.on === 'function' && typeof p.getState === 'function') {
-            var startSkipping = function () {
-              if (skipIv) return;
-              var attempts = 0;
-              skipIv = setInterval(function () {
-                try { p.skipAd && p.skipAd(); } catch (e) {}
-                if (++attempts > 12) { clearInterval(skipIv); skipIv = null; } // ~12s cap
-              }, 1000);
-            };
-            var stopSkipping = function () { if (skipIv) { clearInterval(skipIv); skipIv = null; } };
-            p.on('adStarted', startSkipping);
-            p.on('adImpression', startSkipping);
-            p.on('adPlay', startSkipping);
-            p.on('adBreakStart', startSkipping);
-            p.on('adSkipped', stopSkipping);
-            p.on('adComplete', stopSkipping);
-            p.on('adBreakEnd', stopSkipping);
-            clearInterval(iv);
-          }
-        }
+        var r = btn.getBoundingClientRect();
+        btn.dispatchEvent(new MouseEvent('click', {
+          bubbles: true, cancelable: true, view: window,
+          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2
+        }));
       } catch (e) {}
-      if (++tries > 80) clearInterval(iv);
     }, 200);
+  })();
+
+  // 0d) Recovery watchdog: if nothing has actually STARTED playing within a
+  // grace window — whether the cause is the top-frame player crashing again in
+  // some way not yet covered, OR (confirmed via macOS testing) the site routing
+  // this load to its own cross-origin iframe embed at fcloud.live, which has its
+  // own separate, ad-laden player our script has zero DOM access to and cannot
+  // fix or even see the internal state of — try to recover rather than sit on a
+  // black screen forever. First try switching to a different "server" button
+  // (cheap, no reload, and if content is served natively on that server this
+  // is enough); if that still produces nothing playing, fall back to a full
+  // page reload to re-roll which delivery path/server the site serves this
+  // time. Capped via sessionStorage (survives the reload, keyed by episode
+  // path) so a genuinely broken episode doesn't reload forever.
+  (function recoveryWatchdog() {
+    var STORE_KEY = 'tpweb_recovery_' + location.pathname;
+    var everPlayed = false, triedServerSwitch = false;
+    var start = Date.now();
+    function getAttempts() { try { return parseInt(sessionStorage.getItem(STORE_KEY) || '0', 10); } catch (e) { return 0; } }
+    function bumpAttempts() { try { sessionStorage.setItem(STORE_KEY, String(getAttempts() + 1)); } catch (e) {} }
+    function clearAttempts() { try { sessionStorage.removeItem(STORE_KEY); } catch (e) {} }
+    function trySwitchServer() {
+      try {
+        var btns = Array.prototype.slice.call(document.querySelectorAll('button')).filter(function (b) {
+          return /Vietsub|Thuyết Minh/i.test(b.textContent || '');
+        });
+        if (btns.length < 2) return false;
+        var active = btns.filter(function (b) { return b.className.indexOf('00dc5a') !== -1; })[0] || btns[0];
+        var next = btns.filter(function (b) { return b !== active; })[0];
+        if (next) { next.click(); return true; }
+      } catch (e) {}
+      return false;
+    }
+    var iv = setInterval(function () {
+      var v = document.querySelector('video');
+      if (v && v.readyState >= 3 && v.currentTime > 0.5) { everPlayed = true; clearAttempts(); clearInterval(iv); return; }
+      var elapsed = Date.now() - start;
+      if (elapsed > 8000 && !triedServerSwitch) {
+        triedServerSwitch = true;
+        trySwitchServer();
+      } else if (elapsed > 16000) {
+        clearInterval(iv);
+        if (getAttempts() < 2) { bumpAttempts(); try { location.reload(); } catch (e) {} }
+        // after 2 reload attempts, stop trying — a real/still-unknown issue,
+        // not worth reload-looping the user forever
+      }
+    }, 1000);
   })();
 
   // 1) Kill popups / popunders — the worst offender on free phim sites. Define as
