@@ -10,6 +10,23 @@
   // Known ad / popunder networks (matched anywhere in the URL).
   var AD = /(doubleclick|googlesyndication|googleadservices|pagead2|adservice|popads|popcash|popunder|propellerads|propel|adsterra|mgid|taboola|outbrain|revcontent|histats|adnxs|adsystem|clickadu|hilltopads|exoclick|juicyads|trafficjunky|a-ads|ad-maven|admaven|bidgear|monetag|richads|galaksion|onclckbn|onclickalgo|highperformanceformat|coinzillatag|adtng|adskeeper|adcenter)/i;
 
+  // TizenBrew injects this script via CDP's Page.addScriptToEvaluateOnNewDocument
+  // — the same mechanism agent-browser's --init-script uses — which runs at the
+  // ABSOLUTE start of navigation, before the parser has created ANY DOM nodes.
+  // At that exact synchronous instant document.documentElement/body/head can all
+  // be null. Confirmed directly: `(document.body||document.documentElement)
+  // .appendChild(...)` threw "Cannot read properties of null (reading
+  // 'appendChild')" in testing. Several places in this file relied on that
+  // assumption; some fail silently (masked by an outer try/catch — meaning that
+  // FEATURE just doesn't activate on affected page loads, a plausible source of
+  // the intermittent behavior seen this whole session), one crashed uncaught and
+  // aborted everything after it in the same scope. Fix: never touch head/body/
+  // documentElement synchronously — always go through this retrying helper.
+  function whenDocReady(fn) {
+    if (document.documentElement) { try { fn(); } catch (e) {} }
+    else setTimeout(function () { whenDocReady(fn); }, 0);
+  }
+
   function hostOf(u) { try { return new URL(u, location.href).hostname; } catch (e) { return ''; } }
   function isAdUrl(u) {
     if (!u) return false;
@@ -29,11 +46,11 @@
   // client-side; there's no close button and no mouse on the TV, so remove them
   // outright. These classes are the site's ad containers — safe to nuke.
   var AD_SELECTOR = '.ads-banner, ins.adsbygoogle, [id^="ad_"], [id^="ads-"], [class*="banner-ads"], [class*="ads-banner"], img[src*="adcenter"]';
-  try {
+  whenDocReady(function () {
     var st = document.createElement('style');
     st.textContent = AD_SELECTOR + '{display:none!important;height:0!important;overflow:hidden!important}';
     (document.head || document.documentElement).appendChild(st);
-  } catch (e) {}
+  });
 
   // Ad images are matched by KNOWN ad host only (AD regex, e.g. adcenter.cx).
   // Do NOT blanket-block cross-origin images: legit posters come from CDNs like
@@ -287,9 +304,8 @@
       }
     }
   });
-  function start() { sweep(document); try { obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] }); } catch (e) {} }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
-  else start();
+  function start() { sweep(document); obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] }); }
+  whenDocReady(start);
 
   // 4) Remote-driven VIRTUAL MOUSE CURSOR. phimmoie is a mouse/touch SPA; the TV
   // has only a D-pad. Arrow keys move an on-screen cursor (with acceleration), OK
@@ -302,13 +318,19 @@
 
     function ensure() {
       if (cur && document.body && document.body.contains(cur)) return;
+      // document.body/documentElement can both be null this early (confirmed —
+      // see whenDocReady's comment); called from the keydown handler with no
+      // surrounding try/catch, so guard here directly rather than throw and break
+      // that keypress's whole handler.
+      var root = document.body || document.documentElement;
+      if (!root) return;
       cur = document.createElement('div');
       cur.setAttribute('data-tpweb-cursor', '1');
       cur.style.cssText = 'position:fixed;width:26px;height:26px;z-index:2147483647;pointer-events:none;' +
         'border-radius:50%;background:rgba(255,43,43,.30);border:2px solid #ff2b2b;' +
         'box-shadow:0 0 9px 2px rgba(255,43,43,.75),inset 0 0 4px rgba(255,255,255,.6);' +
         'transform:translate(-50%,-50%);transition:left .045s linear,top .045s linear;will-change:left,top';
-      (document.body || document.documentElement).appendChild(cur);
+      root.appendChild(cur);
       if (!cx && !cy) { cx = (window.innerWidth || 1280) / 2; cy = (window.innerHeight || 720) / 2; }
       draw();
     }
@@ -416,11 +438,17 @@
     var badge;
     function ensureBadge() {
       if (badge && document.body && document.body.contains(badge)) return;
+      // This exact call — (document.body||document.documentElement).appendChild —
+      // is what threw "Cannot read properties of null (reading 'appendChild')" in
+      // testing: both can be null this early. Guard directly instead of throwing,
+      // which previously aborted the rest of this IIFE (tick/hookJw never ran).
+      var root = document.body || document.documentElement;
+      if (!root) return;
       badge = document.createElement('div');
       badge.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;max-width:60vw;' +
         'background:rgba(0,0,0,.7);color:#0f0;font:11px/1.4 monospace;padding:5px 8px;' +
         'border-radius:6px;white-space:pre-wrap;pointer-events:none';
-      (document.body || document.documentElement).appendChild(badge);
+      root.appendChild(badge);
     }
     function suspectAncestors(el) {
       var bad = [], n = el, depth = 0;
@@ -460,31 +488,67 @@
     // (which changes every tick during normal playback and would otherwise spam
     // a "new" line every second even when nothing relevant changed). A separate
     // always-current "now" line on top shows live currentTime/paused.
-    var log = [], lastSig = '';
+    var log = [], lastSig = '', nowLine = 'now: (init)';
     var seenAt = Date.now();
-    function tick() {
-      ensureBadge(); // ALWAYS show the badge — previously this only got created
-      // the first time a video existed, so "no video at all this session" showed
-      // nothing rather than saying so.
-      var vids = document.querySelectorAll('video');
+    function render() { if (badge) badge.textContent = nowLine + '\n---- log ----\n' + log.join('\n'); }
+    function pushLog(s) {
       var t = ((Date.now() - seenAt) / 1000).toFixed(0) + 's';
-      var nowLine, sig, fullLine;
+      log.push('[' + t + '] ' + s);
+      if (log.length > 14) log.shift();
+      render();
+    }
+    // The video element appearing then DISAPPEARING (not just staying at 0x0) is a
+    // different finding than "black while playing" — it means the player is
+    // crashing/tearing itself down before ever reaching a playing state. Capture
+    // any JS error or unhandled rejection during this session, since that's the
+    // most likely direct cause of an unexpected teardown.
+    try {
+      window.addEventListener('error', function (ev) {
+        pushLog('JS ERROR: ' + (ev.message || '?') + ' @ ' + (ev.filename || '?').split('/').pop() + ':' + ev.lineno);
+      });
+      window.addEventListener('unhandledrejection', function (ev) {
+        var r = ev.reason;
+        pushLog('UNHANDLED REJECTION: ' + (r && r.message ? r.message : String(r)).slice(0, 80));
+      });
+    } catch (e) {}
+    // Also hook JW's own error-family events directly, if/when a player instance
+    // shows up — these often fire right before JW tears its own DOM down.
+    var jwHooked = false;
+    function hookJw() {
+      if (jwHooked || !window.jwplayer) return;
+      try {
+        var p = window.jwplayer();
+        if (!p || typeof p.on !== 'function') return;
+        ['error', 'setupError', 'adError'].forEach(function (evt) {
+          p.on(evt, function (data) { pushLog('JW ' + evt + ': ' + JSON.stringify(data).slice(0, 100)); });
+        });
+        jwHooked = true;
+      } catch (e) {}
+    }
+    ensureBadge(); // create the badge up-front, before any video ever exists
+    render();
+    function tick() {
+      ensureBadge(); // retry — the very first call above can silently no-op if
+      // document.body/documentElement were still null at that exact instant.
+      hookJw();
+      var vids = document.querySelectorAll('video');
+      var sig, body;
       if (!vids.length) {
         sig = 'novideo';
-        nowLine = 'now: no <video> element';
-        fullLine = '[' + t + '] no <video> element';
+        body = 'no <video> element';
       } else {
         var d = describeVideo(vids[0], 0).replace(/\n\s*/g, ' ');
         // Signature = same description but with the volatile t=X.X and paused=X
         // stripped, so only size/ready/src/coveredBy/hazards changes count as new.
         sig = vids.length + '|' + d.replace(/ t=[\d.]+/, '').replace(/paused=(true|false)/, '');
-        nowLine = 'now: (' + vids.length + ') ' + d;
-        fullLine = '[' + t + '] (' + vids.length + ') ' + d;
+        body = '(' + vids.length + ') ' + d;
       }
-      if (sig !== lastSig) { log.push(fullLine); lastSig = sig; if (log.length > 10) log.shift(); }
-      badge.textContent = nowLine + '\n---- log ----\n' + log.join('\n');
+      nowLine = 'now: ' + body;
+      if (sig !== lastSig) { pushLog(body); lastSig = sig; } else { render(); }
     }
-    setInterval(tick, 1000);
+    setInterval(tick, 300); // fast polling — the video element has been observed to
+    // appear only briefly before disappearing again; a 1s interval could straddle
+    // and miss that window entirely.
   })();
 
   console.log('[TizenPhimWeb] ad-block + virtual cursor active on ' + location.hostname);
