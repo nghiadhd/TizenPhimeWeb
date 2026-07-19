@@ -5,7 +5,16 @@
   'use strict';
 
   // Hosts that are part of the site/player and must NEVER be touched.
-  var WHITELIST = /(^|\.)(phimmoie\.fm|motchille\.cx|opstream\d*\.com|kkphimplayer\d*\.com|jwpcdn\.com|jwplatform\.com|jwplayer\.com|ytimg\.com|youtube\.com|youtube-nocookie\.com|google\.com|gstatic\.com|googleapis\.com|cloudflare\.com|cloudflareinsights\.com|recaptcha\.net|jsdelivr\.net)$/i;
+  // fcloud.live: CONFIRMED via direct inspection this is the actual video CDN/player
+  // host for the "Vietsub #1" server — phimmoie.fm embeds it as a cross-origin
+  // iframe (<iframe src="https://fcloud.live/cinema/...">) for real episode playback.
+  // Without this whitelist entry, isAdUrl() classified it as a non-whitelisted
+  // cross-origin iframe = "ad" and our OWN hide() call set it to display:none — this
+  // was the actual cause of the "black screen, no controls" reports, not a broken
+  // embed: loading the same fcloud.live URL directly (outside the iframe) played the
+  // real ~69min episode cleanly. Checked fcloud.live's own requests for ad-network
+  // domains — none found (just jwplayer/hls.js/p2p-media-loader infra + analytics).
+  var WHITELIST = /(^|\.)(phimmoie\.fm|motchille\.cx|opstream\d*\.com|kkphimplayer\d*\.com|fcloud\.live|jwpcdn\.com|jwplatform\.com|jwplayer\.com|ytimg\.com|youtube\.com|youtube-nocookie\.com|google\.com|gstatic\.com|googleapis\.com|cloudflare\.com|cloudflareinsights\.com|recaptcha\.net|jsdelivr\.net)$/i;
 
   // Known ad / popunder networks (matched anywhere in the URL).
   var AD = /(doubleclick|googlesyndication|googleadservices|pagead2|adservice|popads|popcash|popunder|propellerads|propel|adsterra|mgid|taboola|outbrain|revcontent|histats|adnxs|adsystem|clickadu|hilltopads|exoclick|juicyads|trafficjunky|a-ads|ad-maven|admaven|bidgear|monetag|richads|galaksion|onclckbn|onclickalgo|highperformanceformat|coinzillatag|adtng|adskeeper|adcenter)/i;
