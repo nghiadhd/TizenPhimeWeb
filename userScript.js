@@ -100,60 +100,47 @@
     } catch (e) {}
   }
 
-  // 0b) Neutralise the JW pre-roll at the source: the player fetches a VAST ad tag
-  // from phimmoie.fm/storage/ads/.../vast/...xml (the ad VIDEO lives on adcenter.cx).
-  // Returning an EMPTY-but-valid VAST makes JW cleanly report "no ad" and play the
-  // movie immediately — no stall (unlike aborting), no touching the JW global.
-  var EMPTY_VAST = '<?xml version="1.0" encoding="UTF-8"?><VAST version="3.0"></VAST>';
-  function isVastReq(u) { try { return /\/storage\/ads\/|\/vast\/|[-_]vast\b|adcenter\.cx/i.test(String(u)); } catch (e) { return false; } }
-  try {
-    var _fetch = window.fetch;
-    if (_fetch) window.fetch = function (input) {
-      var u = input && input.url ? input.url : input;
-      if (isVastReq(u)) return Promise.resolve(new Response(EMPTY_VAST, { status: 200, headers: { 'Content-Type': 'text/xml' } }));
-      return _fetch.apply(this, arguments);
-    };
-  } catch (e) {}
-  try {
-    var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function (m, u) { this.__tpwebVast = isVastReq(u); return _open.apply(this, arguments); };
-    XMLHttpRequest.prototype.send = function () {
-      var xhr = this;
-      if (xhr.__tpwebVast) {
-        try {
-          Object.defineProperty(xhr, 'readyState', { configurable: true, value: 4 });
-          Object.defineProperty(xhr, 'status', { configurable: true, value: 200 });
-          Object.defineProperty(xhr, 'responseText', { configurable: true, value: EMPTY_VAST });
-          Object.defineProperty(xhr, 'response', { configurable: true, value: EMPTY_VAST });
-        } catch (e) {}
-        setTimeout(function () {
-          try { if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange(); } catch (e) {}
-          try { xhr.dispatchEvent(new Event('readystatechange')); } catch (e) {}
-          try { if (typeof xhr.onload === 'function') xhr.onload(); } catch (e) {}
-          try { xhr.dispatchEvent(new Event('load')); } catch (e) {}
-        }, 0);
-        return;
-      }
-      return _send.apply(this, arguments);
-    };
-  } catch (e) {}
+  // 0b) [REMOVED] Previously faked an EMPTY VAST response (returning
+  // `<VAST version="3.0"></VAST>` for the ad tag request) hoping JW would cleanly
+  // report "no ad" and skip straight to content. CONFIRMED via the diagnostic log
+  // this actually does the opposite: JW's ad plugin treats an empty/adless VAST as
+  // an `adError`, and JW's error-recovery for that specific case appears to TEAR
+  // DOWN its own player instance rather than gracefully fall through to content —
+  // directly matching the observed "video element mounts, adError fires, video
+  // element vanishes" sequence. Reverted: the real VAST/ad request is now allowed
+  // through untouched (JW's normal, presumably better-tested code path), and 0c
+  // below skips the ad via its OWN supported, intentional skipAd() action instead.
 
-  // 0c) Skip the JW Player pre-roll (a betting VAST video ad from adcenter.cx).
-  // We must NOT wrap window.jwplayer — doing so breaks JW's own setup and the
-  // player never mounts. Instead poll for the mounted instance and skip any ad
-  // the moment it starts, via JW's own event API. Non-destructive to the player.
+  // 0c) Skip the JW Player pre-roll (a betting VAST video ad from adcenter.cx) via
+  // JW's own supported skip action — not by feeding it an error condition. We must
+  // NOT wrap window.jwplayer — doing so breaks JW's own setup and the player never
+  // mounts. Poll for the mounted instance, then keep retrying skipAd() for the
+  // duration of the ad: the site configures a 5s `skipoffset`, so an immediate
+  // skipAd() call right on adStarted likely no-ops (not skippable yet) — retry
+  // every second until the ad is gone, rather than a single one-shot attempt.
   (function killJwAds() {
-    var tries = 0;
+    var tries = 0, skipIv = null;
     var iv = setInterval(function () {
       try {
         if (window.jwplayer) {
           var p = window.jwplayer();
           if (p && typeof p.on === 'function' && typeof p.getState === 'function') {
-            var skip = function () { try { p.skipAd && p.skipAd(); } catch (e) {} };
-            p.on('adStarted', skip);
-            p.on('adImpression', skip);
-            p.on('adPlay', skip);
-            p.on('adBreakStart', skip);
+            var startSkipping = function () {
+              if (skipIv) return;
+              var attempts = 0;
+              skipIv = setInterval(function () {
+                try { p.skipAd && p.skipAd(); } catch (e) {}
+                if (++attempts > 12) { clearInterval(skipIv); skipIv = null; } // ~12s cap
+              }, 1000);
+            };
+            var stopSkipping = function () { if (skipIv) { clearInterval(skipIv); skipIv = null; } };
+            p.on('adStarted', startSkipping);
+            p.on('adImpression', startSkipping);
+            p.on('adPlay', startSkipping);
+            p.on('adBreakStart', startSkipping);
+            p.on('adSkipped', stopSkipping);
+            p.on('adComplete', stopSkipping);
+            p.on('adBreakEnd', stopSkipping);
             clearInterval(iv);
           }
         }
