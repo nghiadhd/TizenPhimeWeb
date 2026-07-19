@@ -164,7 +164,17 @@
   // page reload to re-roll which delivery path/server the site serves this
   // time. Capped via sessionStorage (survives the reload, keyed by episode
   // path) so a genuinely broken episode doesn't reload forever.
+  //
+  // MUST be gated to actual watch pages only (URL contains /tap-<n>). CONFIRMED
+  // live: without this gate, the watchdog ran on the homepage too — there is
+  // NEVER a <video> element there, so "nothing started playing" was always
+  // true, and it silently self-reloaded the page every ~16s. On a desktop test
+  // tab that reload strips the one-shot injected script entirely (looks like
+  // "ads reappear if you stop interacting"); on the real TV/Tampermonkey
+  // deployments the script reinjects fine, but the browsing page would still
+  // reload itself unprompted every 16s while just sitting on movie listings.
   (function recoveryWatchdog() {
+    if (!/\/tap-\d+/.test(location.pathname)) return;
     var STORE_KEY = 'tpweb_recovery_' + location.pathname;
     var everPlayed = false, triedServerSwitch = false;
     var start = Date.now();
