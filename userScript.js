@@ -442,13 +442,37 @@
           '\n  coveredBy=' + coveredBy + '\n  hazards=' + (bad.length ? bad.join(' | ') : 'none');
       } catch (e) { return '#' + idx + ' err=' + e.message; }
     }
+    // Sticky log: a video element can exist only briefly (site re-renders, our own
+    // page reload on nav) — a live-only snapshot can miss that entirely, which is
+    // exactly what happened (badge showed real data once, then reverted to "no
+    // video" and stayed there). Keep every MEANINGFULLY DISTINCT state we've ever
+    // seen, most recent last — deduped on a signature that EXCLUDES currentTime
+    // (which changes every tick during normal playback and would otherwise spam
+    // a "new" line every second even when nothing relevant changed). A separate
+    // always-current "now" line on top shows live currentTime/paused.
+    var log = [], lastSig = '';
+    var seenAt = Date.now();
     function tick() {
+      ensureBadge(); // ALWAYS show the badge — previously this only got created
+      // the first time a video existed, so "no video at all this session" showed
+      // nothing rather than saying so.
       var vids = document.querySelectorAll('video');
-      if (!vids.length) { if (badge) badge.textContent = 'TPWEB DIAG: no <video> on page yet'; return; }
-      ensureBadge();
-      var lines = ['TPWEB DIAG (' + vids.length + ' video el' + (vids.length > 1 ? 's' : '') + ')'];
-      for (var i = 0; i < vids.length; i++) lines.push(describeVideo(vids[i], i));
-      badge.textContent = lines.join('\n');
+      var t = ((Date.now() - seenAt) / 1000).toFixed(0) + 's';
+      var nowLine, sig, fullLine;
+      if (!vids.length) {
+        sig = 'novideo';
+        nowLine = 'now: no <video> element';
+        fullLine = '[' + t + '] no <video> element';
+      } else {
+        var d = describeVideo(vids[0], 0).replace(/\n\s*/g, ' ');
+        // Signature = same description but with the volatile t=X.X and paused=X
+        // stripped, so only size/ready/src/coveredBy/hazards changes count as new.
+        sig = vids.length + '|' + d.replace(/ t=[\d.]+/, '').replace(/paused=(true|false)/, '');
+        nowLine = 'now: (' + vids.length + ') ' + d;
+        fullLine = '[' + t + '] (' + vids.length + ') ' + d;
+      }
+      if (sig !== lastSig) { log.push(fullLine); lastSig = sig; if (log.length > 10) log.shift(); }
+      badge.textContent = nowLine + '\n---- log ----\n' + log.join('\n');
     }
     setInterval(tick, 1000);
   })();
