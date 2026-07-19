@@ -393,61 +393,64 @@
   })();
 
   // 5) DIAGNOSTIC (non-intrusive — a small corner label, never covers the video).
-  // Reports ground truth on JW's own video once it starts playing: real pixel
-  // dimensions (proves whether decode is happening at all) and whether anything
-  // sits on top of it or carries a disqualifying CSS property (filter/transform/
-  // opacity/mix-blend-mode/backdrop-filter) on its ancestor chain up to the player
-  // container. This settles, with real on-TV data instead of more guessing,
-  // whether the black screen is a compositing/CSS issue or genuine decode failure.
+  // Reports ground truth on JW's own video: real pixel dimensions (proves whether
+  // decode is happening at all), whether anything sits on top of it, and any
+  // ancestor carrying a disqualifying CSS property. No URL gate, no "wait until
+  // currentTime crosses a threshold" — those are exactly the kind of assumption
+  // that can silently suppress the one signal we need (e.g. if video decode is
+  // stuck at t=0 while audio plays through a separate path, a threshold-gated
+  // report would never fire — but "stuck at t=0" IS the finding). Shows live,
+  // continuously-updating state for every <video> on the page, starting the
+  // moment one exists, so it can't fail to show *something*.
   (function playerDiagnostic() {
-    if (!/\/tap-\d+/i.test(location.pathname)) return;
-    var badge, reported = false;
+    var badge;
     function ensureBadge() {
       if (badge && document.body && document.body.contains(badge)) return;
       badge = document.createElement('div');
-      badge.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;max-width:46vw;' +
-        'background:rgba(0,0,0,.55);color:#0f0;font:11px/1.4 monospace;padding:5px 8px;' +
+      badge.style.cssText = 'position:fixed;left:6px;bottom:6px;z-index:2147483647;max-width:60vw;' +
+        'background:rgba(0,0,0,.7);color:#0f0;font:11px/1.4 monospace;padding:5px 8px;' +
         'border-radius:6px;white-space:pre-wrap;pointer-events:none';
       (document.body || document.documentElement).appendChild(badge);
     }
     function suspectAncestors(el) {
       var bad = [], n = el, depth = 0;
       while (n && depth < 8) {
-        var s = getComputedStyle(n);
-        var flags = [];
-        if (s.filter && s.filter !== 'none') flags.push('filter=' + s.filter);
-        if (s.transform && s.transform !== 'none') flags.push('transform');
-        if (s.opacity && parseFloat(s.opacity) < 1) flags.push('opacity=' + s.opacity);
-        if (s.mixBlendMode && s.mixBlendMode !== 'normal') flags.push('blend=' + s.mixBlendMode);
-        if (s.backdropFilter && s.backdropFilter !== 'none') flags.push('backdrop-filter');
-        if (s.willChange && s.willChange !== 'auto') flags.push('will-change=' + s.willChange);
-        if (flags.length) bad.push((n.tagName || '?') + '.' + String(n.className || '').slice(0, 20) + '[' + flags.join(',') + ']');
+        try {
+          var s = getComputedStyle(n);
+          var flags = [];
+          if (s.filter && s.filter !== 'none') flags.push('filter=' + s.filter);
+          if (s.transform && s.transform !== 'none') flags.push('transform');
+          if (s.opacity && parseFloat(s.opacity) < 1) flags.push('opacity=' + s.opacity);
+          if (s.mixBlendMode && s.mixBlendMode !== 'normal') flags.push('blend=' + s.mixBlendMode);
+          if (s.backdropFilter && s.backdropFilter !== 'none') flags.push('backdrop-filter');
+          if (s.display === 'none' || s.visibility === 'hidden') flags.push('HIDDEN(' + s.display + '/' + s.visibility + ')');
+          if (flags.length) bad.push((n.tagName || '?') + '.' + String(n.className || '').slice(0, 20) + '[' + flags.join(',') + ']');
+        } catch (e) {}
         n = n.parentElement; depth++;
       }
       return bad;
     }
-    function report(v) {
-      if (reported) return;
-      var r = v.getBoundingClientRect();
-      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      var topEl = document.elementFromPoint(cx, cy);
-      var coveredBy = (topEl && topEl !== v && !v.contains(topEl)) ? (topEl.tagName + '.' + String(topEl.className || '').slice(0, 24)) : 'none';
-      var bad = suspectAncestors(v);
-      ensureBadge();
-      badge.textContent = 'TPWEB DIAG videoSize=' + v.videoWidth + 'x' + v.videoHeight +
-        ' rectSize=' + Math.round(r.width) + 'x' + Math.round(r.height) +
-        ' readyState=' + v.readyState + ' paused=' + v.paused + ' t=' + v.currentTime.toFixed(1) +
-        '\ncoveredBy=' + coveredBy +
-        '\ncssHazards=' + (bad.length ? bad.join(' | ') : 'none found');
-      reported = true;
-      // Re-check once more a few seconds later in case the first read was mid-transition.
-      setTimeout(function () { reported = false; report(v); }, 8000);
+    function describeVideo(v, idx) {
+      try {
+        var r = v.getBoundingClientRect();
+        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        var topEl = document.elementFromPoint(cx, cy);
+        var coveredBy = (topEl && topEl !== v && !v.contains(topEl)) ? (topEl.tagName + '.' + String(topEl.className || '').slice(0, 20)) : 'nothing';
+        var bad = suspectAncestors(v);
+        return '#' + idx + ' size=' + v.videoWidth + 'x' + v.videoHeight + ' rect=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+          ' ready=' + v.readyState + ' paused=' + v.paused + ' t=' + v.currentTime.toFixed(1) + ' src=' + (v.currentSrc ? 'yes' : 'no') +
+          '\n  coveredBy=' + coveredBy + '\n  hazards=' + (bad.length ? bad.join(' | ') : 'none');
+      } catch (e) { return '#' + idx + ' err=' + e.message; }
     }
-    var iv = setInterval(function () {
-      var v = document.querySelector('video');
-      if (v && v.currentTime > 0.3) report(v);
-    }, 1000);
-    setTimeout(function () { clearInterval(iv); }, 120000);
+    function tick() {
+      var vids = document.querySelectorAll('video');
+      if (!vids.length) { if (badge) badge.textContent = 'TPWEB DIAG: no <video> on page yet'; return; }
+      ensureBadge();
+      var lines = ['TPWEB DIAG (' + vids.length + ' video el' + (vids.length > 1 ? 's' : '') + ')'];
+      for (var i = 0; i < vids.length; i++) lines.push(describeVideo(vids[i], i));
+      badge.textContent = lines.join('\n');
+    }
+    setInterval(tick, 1000);
   })();
 
   console.log('[TizenPhimWeb] ad-block + virtual cursor active on ' + location.hostname);
