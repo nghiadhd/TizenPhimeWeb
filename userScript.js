@@ -391,6 +391,44 @@
   function start() { sweep(document); obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] }); }
   whenDocReady(start);
 
+  // 3b) Force JW Player's controls to always be in the "active" (visible + fully
+  // interactive) state, bypassing JW's own mousemove-based activity timeout
+  // entirely. CONFIRMED live via chrome-devtools MCP (real Tizen browser input
+  // confirmed working fine by direct user testing — this is specific to the
+  // virtual cursor): whenever JW decides "no recent interaction", it adds class
+  // `jw-flag-user-inactive` to its `.jwplayer` container, which sets `.jw-controls`
+  // (and everything inside it — skip button excluded, that one lives outside this
+  // wrapper) to `pointer-events:none`. Result: `elementFromPoint()`/`elementsFromPoint()`
+  // at the EXACT on-screen position of a control (fullscreen, play/pause, volume,
+  // settings) returns the `<video>` element underneath instead of the actual
+  // button — every click silently does nothing, regardless of targeting precision
+  // OR event trust level (verified: a genuinely trusted, real CDP-dispatched
+  // keydown → synthetic click chain still missed, because the hit-test itself
+  // never reaches the button). A real mouse pointer apparently keeps JW "active"
+  // through some continuous-movement heuristic this synthetic, teleporting cursor
+  // doesn't replicate — rather than reverse-engineer JW's exact detection logic,
+  // force the state directly and keep re-forcing it (JW's own timer keeps trying
+  // to reassert inactive).
+  (function forceJwControlsActive() {
+    function apply() {
+      var jwEls = document.querySelectorAll('.jwplayer');
+      for (var i = 0; i < jwEls.length; i++) {
+        jwEls[i].classList.remove('jw-flag-user-inactive');
+        jwEls[i].classList.add('jw-flag-user-active');
+      }
+    }
+    apply();
+    setInterval(apply, 300);
+    // Belt-and-suspenders CSS override in case some intermediate wrapper (e.g. a
+    // backdrop layer) doesn't fully respond to the class swap alone.
+    whenDocReady(function () {
+      var st = document.createElement('style');
+      st.textContent = '.jw-controls, .jw-controlbar, .jw-controls-backdrop, [class*="jw-control"]' +
+        '{ pointer-events: auto !important; opacity: 1 !important; }';
+      (document.head || document.documentElement).appendChild(st);
+    });
+  })();
+
   // 4) Remote-driven VIRTUAL MOUSE CURSOR. phimmoie is a mouse/touch SPA; the TV
   // has only a D-pad. Arrow keys move an on-screen cursor (with acceleration), OK
   // dispatches a real click at the cursor — so you can reach ANYTHING, including the
@@ -458,9 +496,28 @@
     // TizenBrew-cursor-specific risk with no native-browser equivalent) whenever
     // the candidate contains a <video>.
     function containsVideo(el) { return !!(el && el.querySelector && el.querySelector('video')); }
+    // When the cursor sits exactly over an interactive control but a NON-interactive
+    // layer occludes it in the hit-test (CONFIRMED live: JW's own <video> element,
+    // or a backdrop div, sitting topmost at that exact pixel even with the control
+    // bar force-armed above — some intermediate wrapper's pointer-events/stacking
+    // still wins), elementFromPoint() alone returns the WRONG element and both the
+    // hover highlight and clicks silently miss their real target. elementsFromPoint()
+    // returns the FULL stack at that point (topmost first) — scan it for the
+    // nearest interactive ancestor instead of trusting only the single topmost hit.
+    // Falls back to the plain topmost element (matching prior elementFromPoint
+    // behavior exactly) when nothing interactive is found anywhere in the stack, so
+    // normal page clicks (movie cards, links, etc.) are unaffected.
+    function pickInteractive(x, y) {
+      var stack = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [document.elementFromPoint(x, y)];
+      for (var i = 0; i < stack.length; i++) {
+        var t = stack[i] && stack[i].closest ? stack[i].closest('a[href],button,[role="button"],.jw-icon,[onclick],input,[class*="cursor-pointer"]') : null;
+        if (t) return t;
+      }
+      return stack[0] || null;
+    }
     function hover() {
       if (cur) cur.style.display = 'none';
-      var el = document.elementFromPoint(cx, cy);
+      var el = pickInteractive(cx, cy);
       if (cur) cur.style.display = '';
       if (lastHover && lastHover !== el) { try { lastHover.style.removeProperty('filter'); } catch (e) {} }
       var t = el && el.closest ? el.closest('a[href],button,[role="button"],.jw-icon,[onclick],input,[class*="cursor-pointer"]') : null;
@@ -504,10 +561,35 @@
       ensure();
       flashClick();
       if (cur) cur.style.display = 'none';
-      var el = document.elementFromPoint(cx, cy);
+      var el = pickInteractive(cx, cy);
       if (cur) cur.style.display = '';
       if (!el) return;
       tpwebSyntheticTs = Date.now(); // tell onNav to suppress the native gesture OK also emits
+
+      // Fullscreen needs special handling — CONFIRMED live: calling requestFullscreen()
+      // from inside a handler triggered by a SYNTHETIC (dispatchEvent()) click silently
+      // fails, even with navigator.userActivation.isActive === true and
+      // document.fullscreenEnabled === true (no thrown error, no rejected promise —
+      // JW's own click handler presumably calls it, and it's just silently ignored by
+      // the browser). Chrome specifically requires this particular API to be invoked
+      // synchronously within a genuinely TRUSTED event's own call stack — a dispatchEvent()
+      // -triggered synthetic click's listener chain doesn't count, no matter how "active"
+      // the frame's user-activation state looks. Calling it directly HERE instead (this
+      // function is itself still synchronously inside the real, trusted keydown handler
+      // that invoked it — confirmed via ev.isTrusted — nothing async has happened yet)
+      // DOES work. Handle this one action ourselves rather than relying on JW's handler.
+      var fsBtn = el.closest && el.closest('.jw-icon-fullscreen, [class*="fullscreen" i]');
+      if (fsBtn) {
+        try {
+          if (document.fullscreenElement) { document.exitFullscreen(); }
+          else {
+            var fsTarget = fsBtn.closest('.jwplayer') || document.querySelector('.jwplayer') || document.querySelector('video');
+            if (fsTarget && fsTarget.requestFullscreen) fsTarget.requestFullscreen();
+          }
+        } catch (e) {}
+        return; // don't also dispatch a synthetic click — it would just no-op anyway
+      }
+
       // ONLY a single `click` — a full pointerdown+up+click gesture trips the site's
       // popunder, but a lone click still activates links / React / JW controls.
       var o = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
